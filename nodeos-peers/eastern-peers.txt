@@ -1,0 +1,32 @@
+# blockbastrds: PT, Aveiro
+p2p-peer-address = bp.blockbastards.io:9876
+
+# bp.boid: ES, Tenerife, Canary Islands, Spain
+p2p-peer-address = telos.p2p.boid.animus.is:5151
+
+# bp.boid: ES, Tenerife, Canary Islands, Spain
+p2p-peer-address = telos.p2p.boid.animus.is:5252
+
+# eosauthority: DE, Falkenstein
+p2p-peer-address = node-telos.eosauthority.com:10311
+
+# eosriobrazil: BR, Rio de Janeiro
+p2p-peer-address = telos.eosrio.io:8092
+
+# guild.nefty: FI, Finland
+p2p-peer-address = telos-public-seed.neftyblocks.com:9877
+
+# mosaicblocks: FI, Helsinki
+p2p-peer-address = mainnet.mosaicblocks.com:9876
+
+# telosarabia1: DE, Munich
+p2p-peer-address = p2p.telosarabia.net:9876
+
+# telosgermany: DE, Frankfurt
+p2p-peer-address = p2p.telosgermany.genereos.io:9876
+
+# teloskiwinzz: AU, Melbourne
+p2p-peer-address = telosmainnet.bp.kiwi:9786
+
+# zkeraproject: DE, Germany
+p2p-peer-address = peer.telos-validator.zkera.fi:9876
