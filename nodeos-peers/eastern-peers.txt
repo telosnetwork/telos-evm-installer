@@ -10,6 +10,12 @@ p2p-peer-address = telos.p2p.boid.animus.is:5252
 # eosauthority: DE, Falkenstein
 p2p-peer-address = node-telos.eosauthority.com:10311
 
+# eosphereiobp: AU, Perth
+p2p-peer-address = peer1-telos.eosphere.io:9876
+
+# eosphereiobp: AU, Perth
+p2p-peer-address = peer2-telos.eosphere.io:9876
+
 # eosriobrazil: BR, Rio de Janeiro
 p2p-peer-address = telos.eosrio.io:8092
 
