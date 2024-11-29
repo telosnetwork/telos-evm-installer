@@ -60,6 +60,7 @@ check_and_set_port() {
     else
       # Add the port to the global array
       SELECTED_PORTS+=("$selected_port")
+      echo "$selected_port"
       return
     fi
   done
