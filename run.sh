@@ -577,12 +577,25 @@ get_jwt_secret() {
 # Generate reth config
 generate_reth_config() {
     log_info "Generating reth config..."
-    local config_path="./telos-reth-data/config.toml"
+    local config_path="./telos-reth/.env"
 
     cat > "$config_path" << EOF
-
-# The port to listen for RPC requests
-rpc_port = $RETH_RPC_PORT
+DATA_DIR=$INSTALL_DIR/telos-reth-data
+LOG_PATH=$INSTALL_DIR/reth.log
+LOG_LEVEL=info
+CHAIN=tevmmainnet
+RETH_RPC_ADDRESS=0.0.0.0
+RETH_RPC_PORT=$RETH_RPC_PORT
+RETH_WS_ADDRESS=0.0.0.0
+RETH_WS_PORT=$RETH_WS_PORT
+RETH_AUTH_RPC_ADDRESS=127.0.0.1
+RETH_AUTH_RPC_PORT=$RETH_AUTH_RPC_PORT
+RETH_DISCOVERY_PORT=$RETH_DISCOVERY_PORT
+TELOS_ENDPOINT=http://127.0.0.1:$NODEOS_HTTP_RPC_PORT
+TELOS_SIGNER_ACCOUNT=rpc.evm
+TELOS_SIGNER_PERMISSION=rpc
+# This key needs to be updated to send transactions via this node
+TELOS_SIGNER_KEY=5KWcfnGao5K6WV65Zgjd1xvpugRUeKwb6oxzmwaS1tPE2Ef4qzo
 EOF
 }
 
