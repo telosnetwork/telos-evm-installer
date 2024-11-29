@@ -109,7 +109,7 @@ init_inputs() {
   RETH_RPC_PORT=$(check_and_set_port "Enter the RPC port for reth (will be hosted on 0.0.0.0 for external use)" 8545)
   RETH_WS_PORT=$(check_and_set_port "Enter the WS RPC port for reth (will be hosted on 0.0.0.0 for external use)" 8546)
   RETH_AUTH_RPC_PORT=$(check_and_set_port "Enter the Auth RPC port for reth (this is where the consensus client connects via JWT, will be hosted on 127.0.0.1)" 8551)
-  RETH_DISCOVERY_PORT=$(check_and_set_port "Enter the discovery port for reth (not used for discovery but reth wants to open it anyway, will be hosted on 127.0.0.1)" 8551)
+  RETH_DISCOVERY_PORT=$(check_and_set_port "Enter the discovery port for reth (not used for discovery but reth wants to open it anyway, will be hosted on 127.0.0.1)" 30303)
 
   INSTALL_DIR=$(realpath -m "$INSTALL_DIR")
 }
@@ -557,6 +557,7 @@ extract_backup() {
 
 # Get JWT secret
 get_jwt_secret() {
+    cd $INSTALL_DIR
     log_info "Reading JWT secret..."
     local jwt_path="./telos-reth-data/jwt.hex"
     
@@ -572,16 +573,18 @@ get_jwt_secret() {
     fi
     
     log_info "JWT secret successfully read"
+    cd $INSTALL_DIR
 }
 
 # Generate reth config
 generate_reth_config() {
+    cd $INSTALL_DIR
     log_info "Generating reth config..."
     local config_path="./telos-reth/.env"
 
     cat > "$config_path" << EOF
 DATA_DIR=$INSTALL_DIR/telos-reth-data
-LOG_PATH=$INSTALL_DIR/reth.log
+LOG_PATH=$INSTALL_DIR/telos-reth/reth.log
 LOG_LEVEL=info
 CHAIN=tevmmainnet
 RETH_RPC_ADDRESS=0.0.0.0
@@ -597,6 +600,7 @@ TELOS_SIGNER_PERMISSION=rpc
 # This key needs to be updated to send transactions via this node
 TELOS_SIGNER_KEY=5KWcfnGao5K6WV65Zgjd1xvpugRUeKwb6oxzmwaS1tPE2Ef4qzo
 EOF
+    cd $INSTALL_DIR
 }
 
 # Start reth
@@ -611,13 +615,26 @@ start_reth() {
 # Fetch block info from reth
 fetch_block_info() {
     log_info "Fetching block info from reth..."
-    local latest_block=$(curl -s -X POST \
-                          -H "Content-Type: application/json" \
-                          -d '{"method": "eth_getBlockByNumber", "params": ["finalized", false], "id": 1, "jsonrpc": "2.0"}' \
-                          http://127.0.0.1:$RETH_RPC_PORT)
-    local block_number_hex=$(echo $latest_block | jq -r '.result.number')
-    RETH_FINAL_BLOCK=$(($block_number_hex))
-    RETH_PARENT_HASH=$(echo $latest_block | jq -r '.result.parentHash')
+
+    while true; do
+        # Make the curl request
+        local latest_block=$(curl -s -X POST \
+                              -H "Content-Type: application/json" \
+                              -d '{"method": "eth_getBlockByNumber", "params": ["finalized", false], "id": 1, "jsonrpc": "2.0"}' \
+                              http://127.0.0.1:$RETH_RPC_PORT)
+
+        # Check if the request was successful and contains the expected data
+        if [[ -n "$latest_block" && $(echo "$latest_block" | jq -e '.result.number' > /dev/null 2>&1; echo $?) -eq 0 ]]; then
+            local block_number_hex=$(echo $latest_block | jq -r '.result.number')
+            RETH_FINAL_BLOCK=$((block_number_hex))  # Convert hex to decimal
+            RETH_PARENT_HASH=$(echo $latest_block | jq -r '.result.parentHash')
+            log_info "Successfully fetched block info. Block number: $RETH_FINAL_BLOCK"
+            break
+        else
+            log_info "Reth not started so cannot fetch block info, retrying in 1 second..."
+            sleep 1
+        fi
+    done
 }
 
 # Generate consensus client config
@@ -700,7 +717,7 @@ log_install_details() {
     log_info "2. nodeos-ship configuration is managed in config.ini"
     log_info "3. telos-reth configuration is managed in .env"
     log_info "4. telos-consensus-client configuration is managed in config.toml"
-    log_info "Only the http and ws RPC ports are listening publicly, it is advised to put a reverse proxy in front of these services where you terminate SSL"
+    log_info "Only the http and ws reth RPC ports of are listening publicly, it is advised to put a reverse proxy in front of these services where you terminate SSL"
     echo "\
 ████████╗███████╗██╗      ██████╗ ███████╗███████╗██╗   ██╗███╗   ███╗
 ╚══██╔══╝██╔════╝██║     ██╔═══██╗██╔════╝██╔════╝██║   ██║████╗ ████║
@@ -728,6 +745,7 @@ main() {
     download_backup
     extract_backup
     get_jwt_secret
+    generate_reth_config
     start_reth
     fetch_block_info
     generate_consensus_config
