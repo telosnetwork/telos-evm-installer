@@ -629,8 +629,8 @@ EOF
 main() {
     log_info "Starting Telos node setup..."
     
-    install_dependencies
     init_inputs
+    install_dependencies
     init_workspace
     install_rust
     install_nodeos
