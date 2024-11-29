@@ -671,6 +671,46 @@ EOF
     log_info "Consensus client config generated successfully"
 }
 
+# Start consensus client
+start_consensus_client() {
+    log_info "Starting consensus client..."
+    cd $INSTALL_DIR/telos-consensus-client || exit 1
+    bash start.sh
+    log_info "Consensus client started successfully"
+    cd $INSTALL_DIR
+}
+
+# Log installation details
+log_install_details() {
+    log_info "Installation details:"
+    log_info "Install directory: $INSTALL_DIR"
+    log_info "Release tag: $RELEASE_TAG"
+    log_info "Region: $REGION"
+    log_info "Nodeos HTTP RPC port: http://127.0.0.1:$NODEOS_HTTP_RPC_PORT"
+    log_info "Nodeos HTTP P2P port: 127.0.0.1:$NODEOS_HTTP_P2P_PORT"
+    log_info "Nodeos SHIP RPC port: http://127.0.0.1:$NODEOS_SHIP_RPC_PORT"
+    log_info "Nodeos SHIP WS SHIP port: ws://127.0.0.1:$NODEOS_SHIP_WS_SHIP_PORT"
+    log_info "Nodeos SHIP P2P port: 127.0.0.1:$NODEOS_SHIP_P2P_PORT"
+    log_info "Reth RPC port: http://0.0.0.0:$RETH_RPC_PORT"
+    log_info "Reth WS port: ws://0.0.0.0:$RETH_WS_PORT"
+    log_info "Reth Auth RPC port: http://127.0.0.1:$RETH_AUTH_RPC_PORT"
+    log_info "Reth Discovery port: 127.0.0.1:$RETH_DISCOVERY_PORT"
+    log_info "Within $INSTALL_DIR there are 4 services running, each has a start.sh and stop.sh script"
+    log_info "1. nodeos-http configuration is managed in config.ini"
+    log_info "2. nodeos-ship configuration is managed in config.ini"
+    log_info "3. telos-reth configuration is managed in .env"
+    log_info "4. telos-consensus-client configuration is managed in config.toml"
+    log_info "Only the http and ws RPC ports are listening publicly, it is advised to put a reverse proxy in front of these services where you terminate SSL"
+    echo "\
+████████╗███████╗██╗      ██████╗ ███████╗███████╗██╗   ██╗███╗   ███╗
+╚══██╔══╝██╔════╝██║     ██╔═══██╗██╔════╝██╔════╝██║   ██║████╗ ████║
+   ██║   █████╗  ██║     ██║   ██║███████╗█████╗  ██║   ██║██╔████╔██║
+   ██║   ██╔══╝  ██║     ██║   ██║╚════██║██╔══╝  ╚██╗ ██╔╝██║╚██╔╝██║
+   ██║   ███████╗███████╗╚██████╔╝███████║███████╗ ╚████╔╝ ██║ ╚═╝ ██║
+   ╚═╝   ╚══════╝╚══════╝ ╚═════╝ ╚══════╝╚══════╝  ╚═══╝  ╚═╝     ╚═╝"
+
+}
+
 # Main execution
 main() {
     log_info "Starting Telos node setup..."
@@ -689,9 +729,13 @@ main() {
     extract_backup
     get_jwt_secret
     start_reth
-#    generate_consensus_config
+    fetch_block_info
+    generate_consensus_config
+    start_consensus_client
     
     log_info "Setup completed successfully"
+
+    log_install_details
 }
 
 # Run the script
