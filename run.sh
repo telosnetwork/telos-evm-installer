@@ -551,7 +551,7 @@ download_backup() {
 extract_backup() {
     cd $INSTALL_DIR
     log_info "Extracting reth backup..."
-    tar --zstd -xvf latest-reth.tar
+    tar --zstd -xvf latest-reth.tar.zst
     cd $INSTALL_DIR
 }
 
@@ -574,6 +574,39 @@ get_jwt_secret() {
     log_info "JWT secret successfully read"
 }
 
+# Generate reth config
+generate_reth_config() {
+    log_info "Generating reth config..."
+    local config_path="./telos-reth-data/config.toml"
+
+    cat > "$config_path" << EOF
+
+# The port to listen for RPC requests
+rpc_port = $RETH_RPC_PORT
+EOF
+}
+
+# Start reth
+start_reth() {
+    log_info "Starting reth..."
+    cd $INSTALL_DIR/telos-reth || exit 1
+    bash start.sh
+    log_info "Reth started successfully"
+    cd $INSTALL_DIR
+}
+
+# Fetch block info from reth
+fetch_block_info() {
+    log_info "Fetching block info from reth..."
+    local latest_block=$(curl -s -X POST \
+                          -H "Content-Type: application/json" \
+                          -d '{"method": "eth_getBlockByNumber", "params": ["finalized", false], "id": 1, "jsonrpc": "2.0"}' \
+                          http://127.0.0.1:$RETH_RPC_PORT)
+    local block_number_hex=$(echo $latest_block | jq -r '.result.number')
+    RETH_FINAL_BLOCK=$(($block_number_hex))
+    RETH_PARENT_HASH=$(echo $latest_block | jq -r '.result.parentHash')
+}
+
 # Generate consensus client config
 generate_consensus_config() {
     log_info "Generating consensus client config..."
@@ -584,25 +617,25 @@ generate_consensus_config() {
 chain_id = 40
 
 # Execution API http endpoint (JWT protected endpoint on reth)
-execution_endpoint = "http://127.0.0.1:8554"
+execution_endpoint = "http://127.0.0.1:$RETH_AUTH_RPC_PORT"
 
 # The JWT secret used to sign the JWT token
 jwt_secret = "${JWT_SECRET}"
 
 # Nodeos ship ws endpoint
-ship_endpoint = "ws://127.0.0.1:19000"
+ship_endpoint = "ws://127.0.0.1:$NODEOS_SHIP_WS_SHIP_PORT"
 
 # Nodeos http endpoint
-chain_endpoint = "http://127.0.0.1:8888"
+chain_endpoint = "http://127.0.0.1:$NODEOS_HTTP_RPC_PORT"
 
 # Block count in between finalize block calls while syncing
 batch_size = 500
 
 # The parent hash of the start_block
-prev_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+prev_hash = "$RETH_PARENT_HASH"
 
 # Start block to start with, should be at or before the first block of the execution node
-evm_start_block = 0
+evm_start_block = $RETH_FINAL_BLOCK
 
 # (Optional) Expected block hash of the start block
 # validate_hash: Option<String>
@@ -640,8 +673,9 @@ main() {
     clone_repos
     build_clients
     download_backup
-#    extract_backup
-#    get_jwt_secret
+    extract_backup
+    get_jwt_secret
+    start_reth
 #    generate_consensus_config
     
     log_info "Setup completed successfully"
