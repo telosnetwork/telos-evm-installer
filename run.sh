@@ -49,18 +49,17 @@ check_and_set_port() {
     # Check if the port is already selected in this session
     for port in "${SELECTED_PORTS[@]}"; do
       if [[ "$port" == "$selected_port" ]]; then
-        echo "Port $selected_port has already been selected in this process. Please choose another."
+        log_info "Port $selected_port has already been selected in this process. Please choose another."
         continue 2  # Skip to the next iteration of the outer while loop
       fi
     done
 
     # Check if the port is in use
     if lsof -iTCP:"$selected_port" -sTCP:LISTEN &>/dev/null; then
-      echo "Port $selected_port is already in use. Please choose another."
+      log_info "Port $selected_port is already in use. Please choose another."
     else
       # Add the port to the global array
       SELECTED_PORTS+=("$selected_port")
-      echo "$selected_port"
       return
     fi
   done
@@ -98,7 +97,6 @@ init_inputs() {
     log_info "You have selected the east region"
     PEERS_URL="https://raw.githubusercontent.com/telosnetwork/telos-evm-installer/refs/heads/main/nodeos-peers/western-peers.txt"
   fi
-  PEERS=$(curl -s $PEERS_URL)
 
   NODEOS_HTTP_RPC_PORT=$(check_and_set_port "Enter the RPC port for http nodeos" 8888)
   NODEOS_HTTP_P2P_PORT=$(check_and_set_port "Enter the P2P port for http nodeos" 9876)
@@ -155,6 +153,7 @@ install_rust() {
         log_info "Installing Rust..."
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
         source "$HOME/.cargo/env"
+        . "$HOME/.cargo/env"
     else
         log_info "Rust is already installed"
     fi
@@ -173,7 +172,7 @@ install_nodeos() {
 
 setup_nodeos_base() {
     local NODEOS_DIR=$INSTALL_DIR/$1
-    echo "Setting up nodeos base for $1"
+    log_info "Setting up nodeos base for $1"
     mkdir -p $NODEOS_DIR
     cat > $NODEOS_DIR/start.sh << 'EOF'
 #!/bin/bash
@@ -222,7 +221,7 @@ else
 fi
 
 EOF
-    chmod +x *.sh
+    chmod +x $NODEOS_DIR/*.sh
 
     cat > $NODEOS_DIR/logging.json << "EOF"
 {
@@ -375,6 +374,7 @@ EOF
 setup_nodeos() {
   setup_nodeos_base "nodeos-http"
   setup_nodeos_base "nodeos-ship"
+  PEERS=$(curl -s $PEERS_URL)
   # Setup http nodeos config
   cat > $INSTALL_DIR/nodeos-http/config.ini << EOF
 # THIS IS YOUR API SERVER HTTP PORT, PUT IT BEHIND NGINX OR HAPROXY WITH SSL
@@ -481,6 +481,7 @@ EOF
 
 # Download nodeos snapshot
 download_snapshot() {
+    cd $INSTALL_DIR
     log_info "Downloading nodeos snapshot..."
     if [ ! -d ./snapshots ]; then
         mkdir snapshots
@@ -488,7 +489,7 @@ download_snapshot() {
     cd snapshots || exit 1
     curl http://storage.telos.net/evm_backups/mainnet/latest-nodeos.bin.zst --output latest-nodeos.bin.zst
     unzstd latest-nodeos.bin.zst
-    cd ..
+    cd $INSTALL_DIR
 }
 
 # Start nodeos
@@ -500,10 +501,12 @@ start_nodeos() {
     cd $INSTALL_DIR/nodeos-ship || exit 1
     bash start.sh --snapshot ../snapshots/latest-nodeos.bin
     log_info "SHIP nodeos started successfully"
+    cd $INSTALL_DIR
 }
 
 # Clone repositories
 clone_repos() {
+    cd $INSTALL_DIR
     log_info "Cloning Telos repositories..."
     if [ ! -d ./telos-consensus-client ]; then
       git clone --branch $RELEASE_TAG https://github.com/telosnetwork/telos-consensus-client
@@ -511,18 +514,19 @@ clone_repos() {
     if [ ! -d ./telos-reth ]; then
       git clone --branch $RELEASE_TAG https://github.com/telosnetwork/telos-reth
     fi
+    cd $INSTALL_DIR
 }
 
 # Build clients
 build_clients() {
     log_info "Building Telos consensus client..."
-    cd telos-consensus-client || exit 1
+    cd $INSTALL_DIR/telos-consensus-client || exit 1
     if ! bash build.sh; then
         log_error "Failed to build consensus client"
         exit 1
     fi
 
-    cd ../telos-reth || exit 1
+    cd $INSTALL_DIR/telos-reth || exit 1
 
     log_info "Building Telos reth..."
     if ! bash build.sh; then
@@ -530,16 +534,24 @@ build_clients() {
         exit 1
     fi
 
-    cd ..
+    cd $INSTALL_DIR
 }
 
 # Download backup
 download_backup() {
-    log_info "Downloading backup..."
+    cd $INSTALL_DIR
+    log_info "Downloading reth backup..."
     if [ ! -d ./telos-reth-data ]; then
-        git clone --branch telos-v1.0.0-rc5
-        curl https://telosreth.s3.amazonaws.com/backup.tar.gz --output backup.tar.gz
+      curl http://storage.telos.net/evm_backups/mainnet/latest-reth.tar.zst --output latest-reth.tar.zst
     fi
+}
+
+# Extract backup
+extract_backup() {
+    cd $INSTALL_DIR
+    log_info "Extracting reth backup..."
+    tar --zstd -xvf latest-reth.tar
+    cd $INSTALL_DIR
 }
 
 # Get JWT secret
@@ -616,9 +628,9 @@ EOF
 main() {
     log_info "Starting Telos node setup..."
     
+    install_dependencies
     init_inputs
     init_workspace
-    install_dependencies
     install_rust
     install_nodeos
     download_snapshot
@@ -627,8 +639,9 @@ main() {
     clone_repos
     build_clients
     download_backup
-    get_jwt_secret
-    generate_consensus_config
+#    extract_backup
+#    get_jwt_secret
+#    generate_consensus_config
     
     log_info "Setup completed successfully"
 }
