@@ -182,7 +182,7 @@ INSTALL_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 LOG_PATH="$INSTALL_ROOT/nodeos.log"
 DATA_DIR_PATH=$INSTALL_ROOT/data
 
-nohup nodeos --disable-replay-opts --data-dir $DATA_DIR_PATH --config-dir $INSTALL_ROOT "$@" >> "$LOG_PATH" 2>&1 &
+nohup nodeos --disable-replay-opts --data-dir $DATA_DIR_PATH --blocks-log-stride 1000000 --max-retained-block-files 1 --state-history-stride 1000000 --max-retained-history-files 1 --config-dir $INSTALL_ROOT "$@" >> "$LOG_PATH" 2>&1 &
 PID="$!"
 echo "nodeos started with pid $PID"
 echo $PID > $INSTALL_ROOT/nodeos.pid
