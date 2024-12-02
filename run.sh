@@ -3,7 +3,7 @@
 # Set strict error handling
 set -euo pipefail
 
-RELEASE_TAG="telos-v1.0.0-rc5"
+RELEASE_TAG="telos-v1.0.0"
 
 LEAP_DEB="leap_4.0.6-ubuntu22.04_amd64.deb"
 LEAP_DEB_URL="https://github.com/AntelopeIO/leap/releases/download/v4.0.6/$LEAP_DEB"
