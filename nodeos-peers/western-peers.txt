@@ -12,3 +12,8 @@ p2p-peer-address = p2p.telosunlimited.com:9876
 
 # votetelosusa: US, Greenville,SC,USA
 p2p-peer-address = telos.p2p.eosusa.io:9876
+
+p2p-peer-address = 34.94.83.90:9877
+p2p-peer-address = 34.86.6.136:9877
+p2p-peer-address = 34.94.83.90:9876
+p2p-peer-address = 34.86.6.136:9876
