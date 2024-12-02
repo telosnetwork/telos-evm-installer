@@ -720,6 +720,40 @@ EOF
     log_info "Logrotate configuration created at $logrotate_config"
 }
 
+cleanup_downloads() {
+    log_info "Cleaning up downloaded installation files..."
+    
+    # Clean up the reth backup file
+    local reth_backup="$INSTALL_DIR/latest-reth.tar.zst"
+    if [[ -f "$reth_backup" ]]; then
+        # We only delete the backup if the extracted directory exists, ensuring data safety
+        if [[ -d "$INSTALL_DIR/telos-reth-data" ]]; then
+            if rm "$reth_backup"; then
+                log_info "Successfully removed reth backup file: $reth_backup"
+            else
+                log_warning "Failed to remove reth backup file: $reth_backup. You may want to remove it manually."
+            fi
+        else
+            log_warning "Extracted reth directory not found. Keeping backup file for safety."
+        fi
+    fi
+    
+    # Clean up the Leap DEB package
+    local leap_deb="$INSTALL_DIR/$LEAP_DEB"
+    if [[ -f "$leap_deb" ]]; then
+        # We only delete the DEB if nodeos is successfully installed
+        if command_exists nodeos; then
+            if rm "$leap_deb"; then
+                log_info "Successfully removed Leap DEB package: $leap_deb"
+            else
+                log_warning "Failed to remove Leap DEB package: $leap_deb. You may want to remove it manually."
+            fi
+        else
+            log_warning "Nodeos installation not verified. Keeping DEB package for safety."
+        fi
+    fi
+}
+
 # Log installation details
 log_install_details() {
     log_info "Installation details:"
@@ -774,6 +808,7 @@ main() {
     fetch_block_info
     generate_consensus_config
     start_consensus_client
+    cleanup_downloads
     
     log_info "Setup completed successfully"
 
