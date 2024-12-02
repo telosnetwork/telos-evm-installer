@@ -73,7 +73,7 @@ init_inputs() {
   else
       INSTALL_DIR=$(pwd)/telos
   fi
-  log_info "Please provided the following values to setup the Telos node"
+  log_info "Please provide the following values to setup the Telos node"
   log_info "All values will be in configuration files which can be changed later"
   log_info "Press enter to use the default value"
   read -p "Specify the install directory for all services (default: $INSTALL_DIR): " USER_DIR
@@ -685,7 +685,7 @@ EOF
         exit 1
     fi
     
-    log_info "Consensus client config generated successfully"
+    log_info "Consensus client config generated successfully."
 }
 
 # Start consensus client
@@ -695,6 +695,29 @@ start_consensus_client() {
     bash start.sh
     log_info "Consensus client started successfully"
     cd $INSTALL_DIR
+}
+
+#Define logs to be rotated via logrotate
+setup_logrotate() {
+    log_info "Setting up logrotate configuration..."
+    local logrotate_config="/etc/logrotate.d/telos"
+    sudo tee "$logrotate_config" > /dev/null << EOF
+$INSTALL_DIR/telos-consensus-client/consensus.log $INSTALL_DIR/telos-reth/reth.log $INSTALL_DIR/nodeos-ship/nodeos.log $INSTALL_DIR/nodeos-http/nodeos.log {
+   daily
+   rotate 5
+   compress
+   missingok
+   notifempty
+   create 0644 root root
+   dateext
+   copytruncate
+}
+EOF
+
+    # Set proper permissions for logrotate config file
+    sudo chmod 644 "$logrotate_config"
+    
+    log_info "Logrotate configuration created at $logrotate_config"
 }
 
 # Log installation details
@@ -738,6 +761,7 @@ main() {
     install_rust
     install_nodeos
     download_snapshot
+    setup_logrotate
     setup_nodeos
     start_nodeos
     clone_repos
