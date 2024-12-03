@@ -597,8 +597,10 @@ RETH_DISCOVERY_PORT=$RETH_DISCOVERY_PORT
 TELOS_ENDPOINT=http://127.0.0.1:$NODEOS_HTTP_RPC_PORT
 TELOS_SIGNER_ACCOUNT=rpc.evm
 TELOS_SIGNER_PERMISSION=rpc
-# This key needs to be updated to send transactions via this node
-TELOS_SIGNER_KEY=5KWcfnGao5K6WV65Zgjd1xvpugRUeKwb6oxzmwaS1tPE2Ef4qzo
+# Below is the Telos Mainnet Signer Key. Only uncomment one.
+TELOS_SIGNER_KEY=5KjZqM5UTGmmHByRXZaDM1a5JupgGM9925H3NEroTr6CdEZQDvH
+# Below is the Telos Testnet Signer Key. Only uncomment one.
+# TELOS_SIGNER_KEY=5Hq1FmDPfbyfUr5WpgbsYPtxyAkYynBtJ6oS5C7LfZE5MMyZeRJ
 EOF
     cd $INSTALL_DIR
 }
