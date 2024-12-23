@@ -96,7 +96,7 @@ init_inputs() {
     log_info "You have selected the west region"
   else
     log_info "You have selected the east region"
-    PEERS_URL="https://raw.githubusercontent.com/telosnetwork/telos-evm-installer/refs/heads/main/nodeos-peers/western-peers.txt"
+    PEERS_URL="https://raw.githubusercontent.com/telosnetwork/telos-evm-installer/refs/heads/main/nodeos-peers/eastern-peers.txt"
   fi
 
   NODEOS_HTTP_RPC_PORT=$(check_and_set_port "Enter the RPC port for http nodeos" 8888)
