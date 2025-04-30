@@ -5,8 +5,8 @@ set -euo pipefail
 
 RELEASE_TAG="telos-v1.0.1"
 
-LEAP_DEB="leap_4.0.6-ubuntu22.04_amd64.deb"
-LEAP_DEB_URL="https://github.com/AntelopeIO/leap/releases/download/v4.0.6/$LEAP_DEB"
+LEAP_DEB="leap_5.0.3_amd64.deb"
+LEAP_DEB_URL="https://github.com/AntelopeIO/leap/releases/download/v5.0.3/$LEAP_DEB"
 LOCAL_DEBUGGING=true
 
 # Global array to keep track of selected ports
@@ -129,7 +129,17 @@ install_dependencies() {
         exit 1
     fi
 
-    # TODO: Avoid the prompt for timezone
+    # Remove synosnap up-front so its DKMS hook never runs (and always fails)
+    if dpkg -l | grep -qw synosnap; then
+        log_warning "Removing synosnap to avoid DKMS errors"
+        sudo apt remove --purge -y synosnap || true
+    fi
+
+    # Clean up stale crash files so DKMS won’t abort:
+    if [ -d /var/crash ]; then
+      sudo rm -f /var/crash/synosnap.*.crash || true
+    fi
+
     if ! DEBIAN_FRONTEND=noninteractive sudo apt install -y \
         git \
         curl \
@@ -147,6 +157,28 @@ install_dependencies() {
         exit 1
     fi
 }
+
+# If synosnap is installed, purge it now so its broken DKMS hook never runs
+if dpkg -l | grep -qw synosnap; then
+    echo "[WARNING] Purging synosnap to skip its broken DKMS hook"
+    sudo apt purge -y synosnap || true
+fi
+
+# Stub out the dpkg-post-hook so dpkg won’t error on the missing script
+if [ ! -x /opt/synosnap/hooks/dpkg-post-hook.sh ]; then
+  sudo mkdir -p /opt/synosnap/hooks
+  sudo tee /opt/synosnap/hooks/dpkg-post-hook.sh >/dev/null << 'EOF'
+#!/bin/bash
+exit 0
+EOF
+  sudo chmod +x /opt/synosnap/hooks/dpkg-post-hook.sh
+fi
+
+
+# ensure dpkg is unstuck
+sudo dpkg --configure -a || true
+sudo apt -f install -y || true
+
 
 # Install Rust
 install_rust() {
@@ -482,15 +514,34 @@ EOF
 
 # Download nodeos snapshot
 download_snapshot() {
-    cd $INSTALL_DIR
+    cd "$INSTALL_DIR"
     log_info "Downloading nodeos snapshot..."
-    if [ ! -d ./snapshots ]; then
-        mkdir snapshots
+    mkdir -p snapshots && cd snapshots
+
+    local URL="http://storage.telos.net/evm_backups/mainnet/latest-nodeos.bin.zst"
+    local OUT="latest-nodeos.bin.zst"
+
+    # -f: fail on HTTP error, -L: follow redirects, -S: show errors
+    if ! curl -fSL "$URL" -o "$OUT"; then
+        log_error "Failed to download snapshot from $URL"
+        exit 1
     fi
-    cd snapshots || exit 1
-    curl http://storage.telos.net/evm_backups/mainnet/latest-nodeos.bin.zst --output latest-nodeos.bin.zst
-    unzstd latest-nodeos.bin.zst
-    cd $INSTALL_DIR
+
+    # sanity-check that it’s a real zstd file
+    if ! file "$OUT" | grep -q 'Zstandard compressed data'; then
+        log_error "Downloaded file is not a valid zstd snapshot"
+        exit 1
+    fi
+
+    log_info "Decompressing snapshot..."
+    if ! zstd -d "$OUT" -o latest-nodeos.bin; then
+        log_error "Failed to decompress $OUT"
+        exit 1
+    fi
+
+    # Clean up the .zst
+    rm -f "$OUT"
+    cd "$INSTALL_DIR"
 }
 
 # Start nodeos
@@ -540,19 +591,34 @@ build_clients() {
 
 # Download backup
 download_backup() {
-    cd $INSTALL_DIR
+    cd "$INSTALL_DIR"
     log_info "Downloading reth backup..."
-    if [ ! -d ./telos-reth-data ]; then
-      curl http://storage.telos.net/evm_backups/mainnet/latest-reth.tar.zst --output latest-reth.tar.zst
+    local URL="http://storage.telos.net/evm_backups/mainnet/latest-reth.tar.zst"
+    local OUT="latest-reth.tar.zst"
+
+    # fail on HTTP errors, follow redirects
+    if ! curl -fSL "$URL" -o "$OUT"; then
+        log_error "Failed to download reth backup from $URL"
+        exit 1
+    fi
+
+    # sanity-check it’s zstd data
+    if ! file "$OUT" | grep -q 'Zstandard compressed data'; then
+        log_error "Downloaded file is not valid zstd"
+        exit 1
     fi
 }
 
 # Extract backup
 extract_backup() {
-    cd $INSTALL_DIR
-    log_info "Extracting reth backup..."
-    tar --zstd -xvf latest-reth.tar.zst
-    cd $INSTALL_DIR
+    cd "$INSTALL_DIR"
+    log_info "Extracting reth backup…"
+
+    # Decompress then untar in one go
+    if ! zstd -dc latest-reth.tar.zst | tar -xvf - ; then
+        log_error "Failed to decompress+extract latest-reth.tar.zst"
+        exit 1
+    fi
 }
 
 # Get JWT secret
