@@ -112,6 +112,22 @@ init_inputs() {
   RETH_DISCOVERY_PORT=$(check_and_set_port "Enter the discovery port for reth (not used for discovery but reth wants to open it anyway, will be hosted on 127.0.0.1)" 30303)
 
   INSTALL_DIR=$(realpath -m "$INSTALL_DIR")
+
+  # Default URLs for snapshot and reth backup
+  SNAPSHOT_URL_DEFAULT="https://snapshots.eu.telosunlimited.com/snapshot-2025-07-21-23-telos-v6-0416299424.bin.zst"
+  RETH_BACKUP_URL_DEFAULT="https://snapshots.eu.telosunlimited.com/reth-data-july22-2025.tar.zst"
+  SNAPSHOT_URL="$SNAPSHOT_URL_DEFAULT"
+  RETH_BACKUP_URL="$RETH_BACKUP_URL_DEFAULT"
+
+  read -p "Specify the snapshot URL (default: $SNAPSHOT_URL_DEFAULT): " USER_SNAPSHOT_URL
+  if [ -n "$USER_SNAPSHOT_URL" ]; then
+      SNAPSHOT_URL="$USER_SNAPSHOT_URL"
+  fi
+
+  read -p "Specify the reth backup URL (default: $RETH_BACKUP_URL_DEFAULT): " USER_RETH_BACKUP_URL
+  if [ -n "$USER_RETH_BACKUP_URL" ]; then
+      RETH_BACKUP_URL="$USER_RETH_BACKUP_URL"
+  fi
 }
 
 # Initialize workspace
@@ -488,7 +504,7 @@ download_snapshot() {
         mkdir snapshots
     fi
     cd snapshots || exit 1
-    curl http://storage.telos.net/evm_backups/mainnet/latest-nodeos.bin.zst --output latest-nodeos.bin.zst
+    curl -L "$SNAPSHOT_URL" --output latest-nodeos.bin.zst
     unzstd latest-nodeos.bin.zst
     cd $INSTALL_DIR
 }
@@ -543,7 +559,7 @@ download_backup() {
     cd $INSTALL_DIR
     log_info "Downloading reth backup..."
     if [ ! -d ./telos-reth-data ]; then
-      curl http://storage.telos.net/evm_backups/mainnet/latest-reth.tar.zst --output latest-reth.tar.zst
+      curl -L "$RETH_BACKUP_URL" --output latest-reth.tar.zst
     fi
 }
 
@@ -560,19 +576,31 @@ get_jwt_secret() {
     cd $INSTALL_DIR
     log_info "Reading JWT secret..."
     local jwt_path="./telos-reth-data/jwt.hex"
-    
+    local jwt_dir
+    jwt_dir=$(dirname "$jwt_path")
+
     if [[ ! -f "$jwt_path" ]]; then
-        log_error "JWT file not found at $jwt_path"
-        exit 1
+        log_warning "JWT file not found at $jwt_path. Generating a new one."
+        # Ensure the directory exists
+        mkdir -p "$jwt_dir"
+        # Generate a 32-byte hex string (64 hex chars)
+        JWT_SECRET=$(openssl rand -hex 32)
+        # Validate format: must be exactly 64 hex chars
+        if [[ ! $JWT_SECRET =~ ^[0-9a-fA-F]{64}$ ]]; then
+            log_error "Generated JWT secret is not in the correct format."
+            exit 1
+        fi
+        echo "$JWT_SECRET" > "$jwt_path"
+        log_info "New JWT secret generated and saved to $jwt_path"
+    else
+        JWT_SECRET=$(cat "$jwt_path")
+        # Validate format: must be exactly 64 hex chars
+        if [[ ! $JWT_SECRET =~ ^[0-9a-fA-F]{64}$ ]]; then
+            log_error "JWT secret in $jwt_path is not in the correct format."
+            exit 1
+        fi
+        log_info "JWT secret successfully read"
     fi
-    
-    JWT_SECRET=$(cat "$jwt_path")
-    if [[ -z "$JWT_SECRET" ]]; then
-        log_error "JWT secret is empty"
-        exit 1
-    fi
-    
-    log_info "JWT secret successfully read"
     cd $INSTALL_DIR
 }
 
@@ -806,10 +834,10 @@ main() {
     extract_backup
     get_jwt_secret
     generate_reth_config
-    start_reth
-    fetch_block_info
     generate_consensus_config
     start_consensus_client
+    start_reth
+    fetch_block_info
     cleanup_downloads
     
     log_info "Setup completed successfully"
