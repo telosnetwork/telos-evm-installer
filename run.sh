@@ -586,7 +586,7 @@ extract_backup() {
         
         # Search for directories containing the reth data files
         for file in "${reth_data_files[@]}"; do
-            local found_path=$(find . -maxdepth 2 -name "$file" -type f 2>/dev/null | head -1)
+            local found_path=$(find . -maxdepth 4 -name "$file" -type f 2>/dev/null | head -1)
             if [[ -n "$found_path" ]]; then
                 found_dir=$(dirname "$found_path")
                 log_info "Found reth data files in: $found_dir"
