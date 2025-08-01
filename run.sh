@@ -5,8 +5,8 @@ set -euo pipefail
 
 RELEASE_TAG="telos-v1.0.1"
 
-LEAP_DEB="leap_4.0.6-ubuntu22.04_amd64.deb"
-LEAP_DEB_URL="https://github.com/AntelopeIO/leap/releases/download/v4.0.6/$LEAP_DEB"
+LEAP_DEB="leap_5.0.3_amd64.deb"
+LEAP_DEB_URL="https://github.com/AntelopeIO/leap/releases/download/v5.0.3/$LEAP_DEB"
 LOCAL_DEBUGGING=true
 
 # Global array to keep track of selected ports
@@ -112,6 +112,22 @@ init_inputs() {
   RETH_DISCOVERY_PORT=$(check_and_set_port "Enter the discovery port for reth (not used for discovery but reth wants to open it anyway, will be hosted on 127.0.0.1)" 30303)
 
   INSTALL_DIR=$(realpath -m "$INSTALL_DIR")
+
+  # Default URLs for snapshot and reth backup
+  SNAPSHOT_URL_DEFAULT="https://snapshots.eu.telosunlimited.com/snapshot-2025-07-21-23-telos-v6-0416299424.bin.zst"
+  RETH_BACKUP_URL_DEFAULT="https://snapshots.eu.telosunlimited.com/reth-data-july22-2025.tar.zst"
+  SNAPSHOT_URL="$SNAPSHOT_URL_DEFAULT"
+  RETH_BACKUP_URL="$RETH_BACKUP_URL_DEFAULT"
+
+  read -p "Specify the snapshot URL (default: $SNAPSHOT_URL_DEFAULT): " USER_SNAPSHOT_URL
+  if [ -n "$USER_SNAPSHOT_URL" ]; then
+      SNAPSHOT_URL="$USER_SNAPSHOT_URL"
+  fi
+
+  read -p "Specify the reth backup URL (default: $RETH_BACKUP_URL_DEFAULT): " USER_RETH_BACKUP_URL
+  if [ -n "$USER_RETH_BACKUP_URL" ]; then
+      RETH_BACKUP_URL="$USER_RETH_BACKUP_URL"
+  fi
 }
 
 # Initialize workspace
@@ -488,7 +504,7 @@ download_snapshot() {
         mkdir snapshots
     fi
     cd snapshots || exit 1
-    curl http://storage.telos.net/evm_backups/mainnet/latest-nodeos.bin.zst --output latest-nodeos.bin.zst
+    curl -L "$SNAPSHOT_URL" --output latest-nodeos.bin.zst
     unzstd latest-nodeos.bin.zst
     cd $INSTALL_DIR
 }
@@ -543,7 +559,7 @@ download_backup() {
     cd $INSTALL_DIR
     log_info "Downloading reth backup..."
     if [ ! -d ./telos-reth-data ]; then
-      curl http://storage.telos.net/evm_backups/mainnet/latest-reth.tar.zst --output latest-reth.tar.zst
+      curl -L "$RETH_BACKUP_URL" --output latest-reth.tar.zst
     fi
 }
 
@@ -551,7 +567,75 @@ download_backup() {
 extract_backup() {
     cd $INSTALL_DIR
     log_info "Extracting reth backup..."
+    
+    # Extract the backup file
     tar --zstd -xvf latest-reth.tar.zst
+    
+    # Sanity check: Verify the expected directory structure
+    local expected_dir="$INSTALL_DIR/telos-reth-data"
+    local jwt_file="$expected_dir/jwt.hex"
+    
+    # Check if the expected directory exists with the jwt.hex file
+    if [[ -d "$expected_dir" && -f "$jwt_file" ]]; then
+        log_info "Reth backup extracted successfully to expected location: $expected_dir"
+    else
+        # Look for directories that contain the specific reth data files
+        # These files are unique to telos-reth-data and won't be in other directories
+        local reth_data_files=("jwt.hex" "reth.toml" "discovery-secret" "known-peers.json")
+        local found_dir=""
+        
+        # Search for directories containing the reth data files
+        for file in "${reth_data_files[@]}"; do
+            local found_path=$(find . -maxdepth 4 -name "$file" -type f 2>/dev/null | head -1)
+            if [[ -n "$found_path" ]]; then
+                found_dir=$(dirname "$found_path")
+                log_info "Found reth data files in: $found_dir"
+                break
+            fi
+        done
+        
+        if [[ -n "$found_dir" && "$found_dir" != "$expected_dir" ]]; then
+            log_warning "Reth data found in unexpected location: $found_dir"
+            log_info "Moving files to expected location: $expected_dir"
+            
+            # Create the expected directory if it doesn't exist
+            mkdir -p "$expected_dir"
+            
+            # Move all files from the found directory to the expected directory
+            if mv "$found_dir"/* "$expected_dir/" 2>/dev/null; then
+                # Remove the now-empty directory
+                rmdir "$found_dir" 2>/dev/null || true
+                log_info "Successfully moved reth data to: $expected_dir"
+            else
+                log_error "Failed to move files from $found_dir to $expected_dir"
+                exit 1
+            fi
+        elif [[ -z "$found_dir" ]]; then
+            log_error "Could not find reth data files (jwt.hex, reth.toml, discovery-secret, known-peers.json)"
+            log_error "Expected location: $expected_dir"
+            log_error "Please check the backup file structure"
+            exit 1
+        fi
+    fi
+    
+    # Final verification - check for the essential files
+    local essential_files=("jwt.hex" "reth.toml" "discovery-secret")
+    local missing_files=()
+    
+    for file in "${essential_files[@]}"; do
+        if [[ ! -f "$expected_dir/$file" ]]; then
+            missing_files+=("$file")
+        fi
+    done
+    
+    if [[ ${#missing_files[@]} -eq 0 ]]; then
+        log_info "Reth backup extraction verified successfully"
+    else
+        log_error "Final verification failed. Missing essential files: ${missing_files[*]}"
+        log_error "Expected location: $expected_dir"
+        exit 1
+    fi
+    
     cd $INSTALL_DIR
 }
 
@@ -560,19 +644,31 @@ get_jwt_secret() {
     cd $INSTALL_DIR
     log_info "Reading JWT secret..."
     local jwt_path="./telos-reth-data/jwt.hex"
-    
+    local jwt_dir
+    jwt_dir=$(dirname "$jwt_path")
+
     if [[ ! -f "$jwt_path" ]]; then
-        log_error "JWT file not found at $jwt_path"
-        exit 1
+        log_warning "JWT file not found at $jwt_path. Generating a new one."
+        # Ensure the directory exists
+        mkdir -p "$jwt_dir"
+        # Generate a 32-byte hex string (64 hex chars)
+        JWT_SECRET=$(openssl rand -hex 32)
+        # Validate format: must be exactly 64 hex chars
+        if [[ ! $JWT_SECRET =~ ^[0-9a-fA-F]{64}$ ]]; then
+            log_error "Generated JWT secret is not in the correct format."
+            exit 1
+        fi
+        echo "$JWT_SECRET" > "$jwt_path"
+        log_info "New JWT secret generated and saved to $jwt_path"
+    else
+        JWT_SECRET=$(cat "$jwt_path")
+        # Validate format: must be exactly 64 hex chars
+        if [[ ! $JWT_SECRET =~ ^[0-9a-fA-F]{64}$ ]]; then
+            log_error "JWT secret in $jwt_path is not in the correct format."
+            exit 1
+        fi
+        log_info "JWT secret successfully read"
     fi
-    
-    JWT_SECRET=$(cat "$jwt_path")
-    if [[ -z "$JWT_SECRET" ]]; then
-        log_error "JWT secret is empty"
-        exit 1
-    fi
-    
-    log_info "JWT secret successfully read"
     cd $INSTALL_DIR
 }
 
