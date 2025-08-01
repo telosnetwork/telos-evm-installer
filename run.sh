@@ -567,7 +567,75 @@ download_backup() {
 extract_backup() {
     cd $INSTALL_DIR
     log_info "Extracting reth backup..."
+    
+    # Extract the backup file
     tar --zstd -xvf latest-reth.tar.zst
+    
+    # Sanity check: Verify the expected directory structure
+    local expected_dir="$INSTALL_DIR/telos-reth-data"
+    local jwt_file="$expected_dir/jwt.hex"
+    
+    # Check if the expected directory exists with the jwt.hex file
+    if [[ -d "$expected_dir" && -f "$jwt_file" ]]; then
+        log_info "Reth backup extracted successfully to expected location: $expected_dir"
+    else
+        # Look for directories that contain the specific reth data files
+        # These files are unique to telos-reth-data and won't be in other directories
+        local reth_data_files=("jwt.hex" "reth.toml" "discovery-secret" "known-peers.json")
+        local found_dir=""
+        
+        # Search for directories containing the reth data files
+        for file in "${reth_data_files[@]}"; do
+            local found_path=$(find . -maxdepth 2 -name "$file" -type f 2>/dev/null | head -1)
+            if [[ -n "$found_path" ]]; then
+                found_dir=$(dirname "$found_path")
+                log_info "Found reth data files in: $found_dir"
+                break
+            fi
+        done
+        
+        if [[ -n "$found_dir" && "$found_dir" != "$expected_dir" ]]; then
+            log_warning "Reth data found in unexpected location: $found_dir"
+            log_info "Moving files to expected location: $expected_dir"
+            
+            # Create the expected directory if it doesn't exist
+            mkdir -p "$expected_dir"
+            
+            # Move all files from the found directory to the expected directory
+            if mv "$found_dir"/* "$expected_dir/" 2>/dev/null; then
+                # Remove the now-empty directory
+                rmdir "$found_dir" 2>/dev/null || true
+                log_info "Successfully moved reth data to: $expected_dir"
+            else
+                log_error "Failed to move files from $found_dir to $expected_dir"
+                exit 1
+            fi
+        elif [[ -z "$found_dir" ]]; then
+            log_error "Could not find reth data files (jwt.hex, reth.toml, discovery-secret, known-peers.json)"
+            log_error "Expected location: $expected_dir"
+            log_error "Please check the backup file structure"
+            exit 1
+        fi
+    fi
+    
+    # Final verification - check for the essential files
+    local essential_files=("jwt.hex" "reth.toml" "discovery-secret")
+    local missing_files=()
+    
+    for file in "${essential_files[@]}"; do
+        if [[ ! -f "$expected_dir/$file" ]]; then
+            missing_files+=("$file")
+        fi
+    done
+    
+    if [[ ${#missing_files[@]} -eq 0 ]]; then
+        log_info "Reth backup extraction verified successfully"
+    else
+        log_error "Final verification failed. Missing essential files: ${missing_files[*]}"
+        log_error "Expected location: $expected_dir"
+        exit 1
+    fi
+    
     cd $INSTALL_DIR
 }
 
