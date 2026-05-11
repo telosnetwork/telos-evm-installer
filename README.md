@@ -1,163 +1,176 @@
-# Telos EVM v2.0 Installer
+# TelosEVM 3.0 Installer
 
-## Description
-This repo contains a script to install the Telos EVM automatically from backup as well as detailed manual install instructions.
+This installer provisions the TelosEVM 3.0 pre-Savannah stack:
+
+- `telos-reth-v2`
+- `telos-consensus-client`
+- Leap/nodeos HTTP and SHIP nodes
+- systemd units for all four services
+- log files and logrotate
+- a local healthcheck script
+- pre-Savannah head tracking with canonical RPC validation
+- the current public `rpc.evm@rpc` signer key for Telos transaction forwarding
+
+The default branches are the hardened pre-Savannah release branches:
+
+```bash
+https://github.com/TheJudii/telos-reth-v2.git release/pre-savannah-head-tracking
+https://github.com/TheJudii/telos-consensus-client.git release/pre-savannah-head-tracking
+```
+
+## Current Status
+
+This is ready for controlled canary installs. Before publishing as the public one-line production installer, upload the matching Telos mainnet quick chainspec to stable storage and set `RETH_CHAIN_SPEC_URL` as the default in `run.sh`.
+
+The quick reth backup is not enough by itself. Reth v2 must be started with the chainspec that matches the backup DB genesis. The current quick chainspec is large, so it is intentionally not committed to this repo.
 
 ## Quick Start
-To install with 1 line, ensure that `wget` and `sudo` are already installed and then run:
-```bash
-TEMP_DIR=$(mktemp -d) && curl -o "$TEMP_DIR/run.sh" https://raw.githubusercontent.com/telosnetwork/telos-evm-installer/refs/heads/main/run.sh && bash "$TEMP_DIR/run.sh" && rm -rf "$TEMP_DIR"
-```
 
-Alternatively, the automated script for install can be downloaded from `https://raw.githubusercontent.com/telosnetwork/telos-evm-installer/refs/heads/main/run.sh`
-
-# Telos EVM 2.0 Node Installation Script Documentation
-
-This document explains how to use and configure the Telos node installation script. The script automates the process of setting up a complete Telos node environment including nodeos, reth, and the consensus client.
-
-## Prerequisites
-
-Before running the script, ensure your system meets these requirements:
-
-- Ubuntu 22.04 or 24.04 LTS
-- Sudo privileges
-- Internet connectivity
-- Minimum 16GB RAM, 32GB recommended
-- Minimum 8 Cores, 16 cores recommended
-- At least 500GB of solid-state storage
-- Ports available for node operation
-
-## Configuration Options
-
-The script will prompt for several configuration options. Here's what each one means:
-
-### Installation Directory
-- Default: `./telos` or `/telos` if run from root
-- Purpose: Base directory where all Telos node components will be installed
-- Storage requirements: Ensure sufficient disk space in the chosen location
-
-### Version Tag
-- Default: `telos-v1.0.0-rc5`
-- Purpose: Specifies which version of the Telos software to install
-- Format: Must match a valid release tag from the Telos repositories
-
-### Geographic Region
-- Options: `east` or `west`
-- Default: `west`
-- Purpose: Optimizes peer connections based on your location
-  - East: Asia/Europe
-  - West: North/South America
-- Impact: Affects which peer list is used for node connections
-
-### Port Configuration
-The script requires several ports for different services. Default ports are:
-
-| Service | Port Type | Default Port | Listen Address | Description |
-|---------|-----------|--------------|----------------|-------------|
-| Nodeos HTTP | RPC | 8888 | 127.0.0.1 | Main API endpoint |
-| Nodeos HTTP | P2P | 9876 | 127.0.0.1 | Peer communication |
-| Nodeos SHIP | RPC | 9888 | 127.0.0.1 | State-History endpoint |
-| Nodeos SHIP | WebSocket | 18999 | 0.0.0.0 | SHIP WebSocket |
-| Nodeos SHIP | P2P | 9877 | 127.0.0.1 | SHIP peer communication |
-| Reth | RPC | 8545 | 0.0.0.0 | EVM RPC endpoint |
-| Reth | WebSocket | 8546 | 0.0.0.0 | EVM WebSocket endpoint |
-| Reth | Auth RPC | 8551 | 127.0.0.1 | JWT-protected endpoint |
-| Reth | Discovery | 30303 | 127.0.0.1 | Network discovery |
-
-## Installation Components
-
-The script installs and configures several components:
-
-### System Dependencies
-- git
-- curl
-- build-essential
-- clang
-- libclang-dev
-- gcc
-- make
-- zstd
-- pkg-config
-- jq
-- libssl-dev
-
-### Core Components
-1. **Nodeos (Leap)**: EOSIO blockchain node software
-   - Configuration location: `{install_dir}/nodeos-http/config.ini` and `{install_dir}/nodeos-ship/config.ini`
-   - Log location: `{install_dir}/nodeos-http/nodeos.log` and `{install_dir}/nodeos-ship/nodeos.log`
-
-2. **Reth**: Telos EVM execution client
-   - Configuration location: `{install_dir}/telos-reth/.env`
-   - Log location: `{install_dir}/telos-reth/reth.log`
-
-3. **Consensus Client**: Telos consensus layer
-   - Configuration location: `{install_dir}/telos-consensus-client/config.toml`
-   - Log location: `{install_dir}/telos-consensus-client/consensus.log`
-
-## Log Management
-
-The script configures logrotate for all service logs:
-- Rotation frequency: Daily
-- Number of backups: 5
-- Compression: Enabled
-- File permissions: 0644 (root:root)
-
-## Security Considerations
-
-1. **Network Security**
-   - Most services listen on localhost (127.0.0.1)
-   - Only Reth RPC/WS ports are exposed publicly
-   - Recommended to use a reverse proxy with SSL for public endpoints
-
-2. **Configuration Security**
-   - JWT authentication between Reth and consensus client
-   - Default signer key should be updated for production use
-   - Access control headers can be customized in nodeos config
-
-## Post-Installation
-
-After installation completes:
-
-1. Verify all services are running using the provided status scripts
-2. Configure your reverse proxy for the public RPC endpoints
-3. Monitor the logs for any synchronization issues at the below path. When syncing gets to the head block, you will see a rate of 2 blocks per second.
-   - `tail -f {install_dir}/telos-consensus-client/consensus.log | grep sec`
-
-### Service Management
-
-Each component has its own start/stop scripts:
+Interactive install:
 
 ```bash
-# Start a service
-{install_dir}/{service}/start.sh
-
-# Stop a service
-{install_dir}/{service}/stop.sh
+git clone https://github.com/telosnetwork/telos-evm-installer telos-evm-3-installer
+cd telos-evm-3-installer
+git checkout feature/telos-evm-3-installer
+RETH_CHAIN_SPEC_URL="https://YOUR-STABLE-STORAGE/telos-mainnet-quick.json" ./run.sh
 ```
 
-## Troubleshooting
+Non-interactive install:
 
-Common issues and solutions:
+```bash
+NONINTERACTIVE=1 \
+INSTALL_DIR=/opt/telos-evm-3 \
+BOOTSTRAP_MODE=backup \
+RETH_CHAIN_SPEC_URL="https://YOUR-STABLE-STORAGE/telos-mainnet-quick.json" \
+RETH_HTTP_ADDR=127.0.0.1 \
+RETH_WS_ADDR=127.0.0.1 \
+./run.sh
+```
 
-1. **Port Conflicts**
-   - The script checks for port availability
-   - Change ports if conflicts occur
-   - Verify no other services are using the required ports
+For a slow from-genesis install without the quick backup:
 
-2. **Resource Issues**
-   - Monitor system resources during sync
-   - Adjust `chain-state-db-size-mb` if needed
-   - Check disk space regularly
+```bash
+NONINTERACTIVE=1 \
+BOOTSTRAP_MODE=genesis \
+INSTALL_DIR=/opt/telos-evm-3 \
+./run.sh
+```
 
-3. **Network Issues**
-   - Verify peer connections in nodeos logs
-   - Check firewall settings for required ports
-   - Monitor network bandwidth usage
+Genesis mode is mainly useful for validation and development. It is not the recommended path for bringing up production capacity quickly.
 
-## Additional Resources
+## Installed Services
 
-- [Telos Documentation](https://docs.telos.net)
-- [Telos EVM Documentation](https://docs.telos.net/evm)
-- [Telos Network Monitor](https://telosscan.io)
+The installer writes these systemd units:
 
-For support, join the [Telos Discord](https://discord.gg/telos) or open an issue on GitHub.
+```bash
+telos-evm3-nodeos-http.service
+telos-evm3-nodeos-ship.service
+telos-evm3-reth.service
+telos-evm3-consensus.service
+```
+
+Useful commands:
+
+```bash
+systemctl status telos-evm3-reth telos-evm3-consensus
+journalctl -u telos-evm3-reth -f
+journalctl -u telos-evm3-consensus -f
+/opt/telos-evm-3/bin/healthcheck.sh
+```
+
+Log files are written under:
+
+```bash
+/opt/telos-evm-3/logs/
+```
+
+## Default Ports
+
+| Service | Default | Bind |
+| --- | ---: | --- |
+| nodeos HTTP RPC | `8888` | `127.0.0.1` |
+| nodeos HTTP P2P | `9876` | `127.0.0.1` |
+| nodeos SHIP HTTP RPC | `9888` | `127.0.0.1` |
+| nodeos SHIP WS | `18999` | `127.0.0.1` |
+| nodeos SHIP P2P | `9877` | `127.0.0.1` |
+| reth HTTP RPC | `8545` | `127.0.0.1` |
+| reth WS RPC | `8546` | `127.0.0.1` |
+| reth Auth RPC | `8551` | `127.0.0.1` |
+| reth discovery | `30303` | local host networking |
+| reth metrics | `9002` | `127.0.0.1` |
+
+The installer intentionally binds reth HTTP/WS to localhost by default. Put nginx, HAProxy, or another controlled edge in front of it for public RPC.
+
+## Production Safety Defaults
+
+The generated consensus config uses:
+
+```toml
+rpc_fallback_endpoints = [
+  "https://rpc.telos.net/evm",
+  "https://telos.drpc.org/",
+  "https://rpc1.us.telos.net/evm",
+]
+rpc_fallback_quorum = 2
+rpc_fallback_sample_every_n = 1
+```
+
+That means every pre-Savannah head block must match canonical RPC quorum before it is forwarded to reth.
+
+The generated reth launcher uses:
+
+```bash
+--engine.persistence-threshold 20
+--engine.persistence-backpressure-threshold 30
+--engine.memory-block-buffer-target 30
+--telos.trust_consensus true
+--telos.build_state
+```
+
+The public mainnet signer key is:
+
+```bash
+TELOS_SIGNER_KEY=5KjZqM5UTGmmHByRXZaDM1a5JupgGM9925H3NEroTr6CdEZQDvH
+```
+
+It derives to the current on-chain `rpc.evm@rpc` public key:
+
+```bash
+EOS5xBSwWxWqsQP93Ps9N5JCSAjxNtwESgU3AAJgi3PEm5hYMRrCL
+```
+
+The Engine API JWT is generated per install and stored at:
+
+```bash
+/opt/telos-evm-3/telos-reth-data/jwt.hex
+```
+
+## Important Environment Variables
+
+| Variable | Default |
+| --- | --- |
+| `INSTALL_DIR` | `/opt/telos-evm-3` |
+| `BOOTSTRAP_MODE` | `backup` |
+| `RETH_CHAIN_SPEC_URL` | empty, must be set for backup mode |
+| `RETH_CHAIN_SPEC_PATH` | `$INSTALL_DIR/telos-mainnet-quick.json` |
+| `RETH_REPO` | `https://github.com/TheJudii/telos-reth-v2.git` |
+| `RETH_REF` | `release/pre-savannah-head-tracking` |
+| `CONSENSUS_REPO` | `https://github.com/TheJudii/telos-consensus-client.git` |
+| `CONSENSUS_REF` | `release/pre-savannah-head-tracking` |
+| `CANONICAL_RPCS` | `https://rpc.telos.net/evm,https://telos.drpc.org/,https://rpc1.us.telos.net/evm` |
+| `RPC_FALLBACK_QUORUM` | `2` |
+| `SIGNER_KEY` | current public mainnet `rpc.evm@rpc` WIF |
+| `SKIP_START` | `0` |
+
+Set `SKIP_START=1` to build and write configs/units without starting services.
+
+## Remaining Release Work
+
+Before this should become the official public installer:
+
+1. Upload the current mainnet quick chainspec to stable Telos-controlled storage.
+2. Set `RETH_CHAIN_SPEC_URL` in `run.sh` to that stable URL.
+3. Run a clean install on a fresh Ubuntu 22.04/24.04 host.
+4. Run funded tx forwarding smoke tests against the installed node.
+5. Soak for 48-72 hours with 2-of-3 canonical RPC quorum.
+6. Promote the release branch or tag in both client repos.
