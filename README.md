@@ -11,16 +11,16 @@ This installer provisions the TelosEVM 3.0 pre-Savannah stack:
 - pre-Savannah head tracking with canonical RPC validation
 - the current public `rpc.evm@rpc` signer key for Telos transaction forwarding
 
-The default branches are the hardened pre-Savannah release branches:
+The default client refs are the hardened pre-Savannah beta tags:
 
 ```bash
-https://github.com/TheJudii/telos-reth-v2.git release/pre-savannah-head-tracking
-https://github.com/TheJudii/telos-consensus-client.git release/pre-savannah-head-tracking
+https://github.com/TheJudii/telos-reth-v2.git v3.0.0-beta.2
+https://github.com/TheJudii/telos-consensus-client.git v3.0.0-beta.2
 ```
 
 ## Current Status
 
-This is ready for controlled canary installs. Before publishing as the public one-line production installer, upload the matching Telos mainnet quick chainspec to stable storage and set `RETH_CHAIN_SPEC_URL` as the default in `run.sh`.
+This is ready for controlled mainnet beta installs. Before publishing as the public one-line production installer, upload the matching Telos mainnet quick chainspec to stable storage and set `RETH_CHAIN_SPEC_URL` as the default in `run.sh`.
 
 The quick reth backup is not enough by itself. Reth v2 must be started with the chainspec that matches the backup DB genesis. The current quick chainspec is large, so it is intentionally not committed to this repo.
 
@@ -31,7 +31,7 @@ Interactive install:
 ```bash
 git clone https://github.com/telosnetwork/telos-evm-installer telos-evm-3-installer
 cd telos-evm-3-installer
-git checkout feature/telos-evm-3-installer
+git checkout v3.0.0-beta.2
 RETH_CHAIN_SPEC_URL="https://YOUR-STABLE-STORAGE/telos-mainnet-quick.json" ./run.sh
 ```
 
@@ -154,9 +154,9 @@ The Engine API JWT is generated per install and stored at:
 | `RETH_CHAIN_SPEC_URL` | empty, must be set for backup mode |
 | `RETH_CHAIN_SPEC_PATH` | `$INSTALL_DIR/telos-mainnet-quick.json` |
 | `RETH_REPO` | `https://github.com/TheJudii/telos-reth-v2.git` |
-| `RETH_REF` | `release/pre-savannah-head-tracking` |
+| `RETH_REF` | `v3.0.0-beta.2` |
 | `CONSENSUS_REPO` | `https://github.com/TheJudii/telos-consensus-client.git` |
-| `CONSENSUS_REF` | `release/pre-savannah-head-tracking` |
+| `CONSENSUS_REF` | `v3.0.0-beta.2` |
 | `CANONICAL_RPCS` | `https://rpc.telos.net/evm,https://telos.drpc.org/,https://rpc1.us.telos.net/evm` |
 | `RPC_FALLBACK_QUORUM` | `2` |
 | `SIGNER_KEY` | current public mainnet `rpc.evm@rpc` WIF |
@@ -173,4 +173,4 @@ Before this should become the official public installer:
 3. Run a clean install on a fresh Ubuntu 22.04/24.04 host.
 4. Run funded tx forwarding smoke tests against the installed node.
 5. Soak for 48-72 hours with 2-of-3 canonical RPC quorum.
-6. Promote the release branch or tag in both client repos.
+6. Promote from beta tags to final release tags after the soak and smoke-test gates pass.
