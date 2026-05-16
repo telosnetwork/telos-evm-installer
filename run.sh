@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-INSTALLER_VERSION="3.0.0-beta.2"
+INSTALLER_VERSION="3.0.0-beta.3"
 
 RETH_REPO_DEFAULT="https://github.com/TheJudii/telos-reth-v2.git"
-RETH_REF_DEFAULT="v3.0.0-beta.2"
+RETH_REF_DEFAULT="v3.0.0-beta.3"
 CONSENSUS_REPO_DEFAULT="https://github.com/TheJudii/telos-consensus-client.git"
-CONSENSUS_REF_DEFAULT="v3.0.0-beta.2"
+CONSENSUS_REF_DEFAULT="v3.0.0-beta.3"
 
 LEAP_VERSION_DEFAULT="4.0.6"
 LEAP_DEB_DEFAULT="leap_4.0.6-ubuntu22.04_amd64.deb"

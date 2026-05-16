@@ -14,8 +14,8 @@ This installer provisions the TelosEVM 3.0 pre-Savannah stack:
 The default client refs are the hardened pre-Savannah beta tags:
 
 ```bash
-https://github.com/TheJudii/telos-reth-v2.git v3.0.0-beta.2
-https://github.com/TheJudii/telos-consensus-client.git v3.0.0-beta.2
+https://github.com/TheJudii/telos-reth-v2.git v3.0.0-beta.3
+https://github.com/TheJudii/telos-consensus-client.git v3.0.0-beta.3
 ```
 
 ## Current Status
@@ -31,7 +31,7 @@ Interactive install:
 ```bash
 git clone https://github.com/telosnetwork/telos-evm-installer telos-evm-3-installer
 cd telos-evm-3-installer
-git checkout v3.0.0-beta.2
+git checkout v3.0.0-beta.3
 RETH_CHAIN_SPEC_URL="https://YOUR-STABLE-STORAGE/telos-mainnet-quick.json" ./run.sh
 ```
 
@@ -154,9 +154,9 @@ The Engine API JWT is generated per install and stored at:
 | `RETH_CHAIN_SPEC_URL` | empty, must be set for backup mode |
 | `RETH_CHAIN_SPEC_PATH` | `$INSTALL_DIR/telos-mainnet-quick.json` |
 | `RETH_REPO` | `https://github.com/TheJudii/telos-reth-v2.git` |
-| `RETH_REF` | `v3.0.0-beta.2` |
+| `RETH_REF` | `v3.0.0-beta.3` |
 | `CONSENSUS_REPO` | `https://github.com/TheJudii/telos-consensus-client.git` |
-| `CONSENSUS_REF` | `v3.0.0-beta.2` |
+| `CONSENSUS_REF` | `v3.0.0-beta.3` |
 | `CANONICAL_RPCS` | `https://rpc.telos.net/evm,https://telos.drpc.org/,https://rpc1.us.telos.net/evm` |
 | `RPC_FALLBACK_QUORUM` | `2` |
 | `SIGNER_KEY` | current public mainnet `rpc.evm@rpc` WIF |
