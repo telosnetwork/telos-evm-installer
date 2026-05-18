@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-INSTALLER_VERSION="3.0.0-beta.4"
+INSTALLER_VERSION="3.0.0-beta.5"
 
 RETH_REPO_DEFAULT="https://github.com/TheJudii/telos-reth-v2.git"
 RETH_REF_DEFAULT="v3.0.0-beta.3"
 CONSENSUS_REPO_DEFAULT="https://github.com/TheJudii/telos-consensus-client.git"
 CONSENSUS_REF_DEFAULT="v3.0.0-beta.4"
 
-LEAP_VERSION_DEFAULT="4.0.6"
-LEAP_DEB_DEFAULT="leap_4.0.6-ubuntu22.04_amd64.deb"
-LEAP_DEB_URL_DEFAULT="https://github.com/AntelopeIO/leap/releases/download/v4.0.6/leap_4.0.6-ubuntu22.04_amd64.deb"
+TELOS_ZERO_CORE_VERSION_DEFAULT="1.2.2"
+TELOS_ZERO_CORE_DEB_DEFAULT="teloszero-core_1.2.2_amd64.deb"
+TELOS_ZERO_CORE_DEB_URL_DEFAULT="https://github.com/telosnetwork/teloszero-core/releases/download/teloszero-v1.2.2/teloszero-core_1.2.2_amd64.deb"
 
 MAINNET_NODEOS_SNAPSHOT_URL_DEFAULT="http://storage.telos.net/evm_backups/mainnet/latest-nodeos.bin.zst"
 MAINNET_RETH_BACKUP_URL_DEFAULT="http://storage.telos.net/evm_backups/mainnet/latest-reth.tar.zst"
@@ -140,9 +140,9 @@ set_defaults() {
   : "${RETH_REF:=$RETH_REF_DEFAULT}"
   : "${CONSENSUS_REPO:=$CONSENSUS_REPO_DEFAULT}"
   : "${CONSENSUS_REF:=$CONSENSUS_REF_DEFAULT}"
-  : "${LEAP_VERSION:=$LEAP_VERSION_DEFAULT}"
-  : "${LEAP_DEB:=$LEAP_DEB_DEFAULT}"
-  : "${LEAP_DEB_URL:=$LEAP_DEB_URL_DEFAULT}"
+  : "${TELOS_ZERO_CORE_VERSION:=$TELOS_ZERO_CORE_VERSION_DEFAULT}"
+  : "${TELOS_ZERO_CORE_DEB:=$TELOS_ZERO_CORE_DEB_DEFAULT}"
+  : "${TELOS_ZERO_CORE_DEB_URL:=$TELOS_ZERO_CORE_DEB_URL_DEFAULT}"
   : "${NODEOS_SNAPSHOT_URL:=$MAINNET_NODEOS_SNAPSHOT_URL_DEFAULT}"
   : "${RETH_BACKUP_URL:=$MAINNET_RETH_BACKUP_URL_DEFAULT}"
   : "${CANONICAL_RPCS:=$MAINNET_CANONICAL_RPCS_DEFAULT}"
@@ -237,7 +237,7 @@ install_dependencies() {
   sudo_cmd apt-get update
   DEBIAN_FRONTEND=noninteractive sudo_cmd apt-get install -y \
     git curl wget build-essential clang libclang-dev gcc make zstd pkg-config jq \
-    libssl-dev lsof ca-certificates openssl rsync tar
+    libssl-dev libatomic1 libcurl4 libgmp10 zlib1g lsof ca-certificates openssl rsync tar
 }
 
 install_rust() {
@@ -253,14 +253,17 @@ install_rust() {
 }
 
 install_nodeos() {
-  if command_exists nodeos; then
-    log_info "nodeos is already installed"
+  local installed
+  installed="$(dpkg-query -W -f='${Version}' teloszero-core 2>/dev/null || true)"
+
+  if [ "$installed" = "$TELOS_ZERO_CORE_VERSION" ] && command_exists nodeos; then
+    log_info "TelosZero Core $installed is already installed"
     return
   fi
 
-  log_info "Installing Leap $LEAP_VERSION"
-  curl -fsSL "$LEAP_DEB_URL" -o "$DOWNLOAD_DIR/$LEAP_DEB"
-  sudo_cmd dpkg -i "$DOWNLOAD_DIR/$LEAP_DEB"
+  log_info "Installing TelosZero Core $TELOS_ZERO_CORE_VERSION"
+  curl -fsSL "$TELOS_ZERO_CORE_DEB_URL" -o "$DOWNLOAD_DIR/$TELOS_ZERO_CORE_DEB"
+  sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y "$DOWNLOAD_DIR/$TELOS_ZERO_CORE_DEB"
 }
 
 download_nodeos_snapshot() {

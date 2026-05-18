@@ -4,7 +4,7 @@ This installer provisions the TelosEVM 3.0 pre-Savannah stack:
 
 - `telos-reth-v2`
 - `telos-consensus-client`
-- Leap/nodeos HTTP and SHIP nodes
+- TelosZero Core/nodeos HTTP and SHIP nodes
 - systemd units for all four services
 - log files and logrotate
 - a local healthcheck script
@@ -31,7 +31,7 @@ Interactive install:
 ```bash
 git clone https://github.com/telosnetwork/telos-evm-installer telos-evm-3-installer
 cd telos-evm-3-installer
-git checkout v3.0.0-beta.4
+git checkout v3.0.0-beta.5
 RETH_CHAIN_SPEC_URL="https://YOUR-STABLE-STORAGE/telos-mainnet-quick.json" ./run.sh
 ```
 
@@ -157,6 +157,8 @@ The Engine API JWT is generated per install and stored at:
 | `RETH_REF` | `v3.0.0-beta.3` |
 | `CONSENSUS_REPO` | `https://github.com/TheJudii/telos-consensus-client.git` |
 | `CONSENSUS_REF` | `v3.0.0-beta.4` |
+| `TELOS_ZERO_CORE_VERSION` | `1.2.2` |
+| `TELOS_ZERO_CORE_DEB_URL` | `https://github.com/telosnetwork/teloszero-core/releases/download/teloszero-v1.2.2/teloszero-core_1.2.2_amd64.deb` |
 | `CANONICAL_RPCS` | `https://rpc.telos.net/evm,https://telos.drpc.org/,https://rpc1.us.telos.net/evm` |
 | `RPC_FALLBACK_QUORUM` | `2` |
 | `SIGNER_KEY` | current public mainnet `rpc.evm@rpc` WIF |
