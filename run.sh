@@ -5,12 +5,54 @@ set -euo pipefail
 
 RELEASE_TAG="telos-v1.0.1"
 
-LEAP_DEB="leap_4.0.6-ubuntu22.04_amd64.deb"
-LEAP_DEB_URL="https://github.com/AntelopeIO/leap/releases/download/v4.0.6/$LEAP_DEB"
+TELOSZERO_CORE_VERSION="1.2.2"
+TELOSZERO_CORE_RELEASE_TAG="teloszero-v$TELOSZERO_CORE_VERSION"
+TELOSZERO_CORE_DEB="teloszero-core_${TELOSZERO_CORE_VERSION}_amd64.deb"
+TELOSZERO_CORE_DEB_URL="https://github.com/telosnetwork/teloszero-core/releases/download/$TELOSZERO_CORE_RELEASE_TAG/$TELOSZERO_CORE_DEB"
+TELOSZERO_CORE_DEB_SHA256="285fdfc1abde5104892d94b1f380c6d79aba35eac3413f139119ea88574c5007"
+TELOSZERO_CORE_PACKAGE="teloszero-core"
+CONFLICTING_NODEOS_PACKAGES=(eosio mandel leap spring antelope-spring)
+STORAGE_BASE_URL="${STORAGE_BASE_URL:-https://storage.telos.net/evm_backups/mainnet}"
+NODEOS_BACKUP_BASE_URL="${NODEOS_BACKUP_BASE_URL:-$STORAGE_BASE_URL}"
+RETH_BACKUP_BASE_URL="${RETH_BACKUP_BASE_URL:-$STORAGE_BASE_URL/telos-evm-2}"
+SHIP_ARCHIVE_BASE_URL="${SHIP_ARCHIVE_BASE_URL:-$STORAGE_BASE_URL/mainnet-ship}"
+NATIVE_RPC_URL="${NATIVE_RPC_URL:-https://mainnet.telos.net}"
+EVM_RPC_URL="${EVM_RPC_URL:-https://rpc.telos.net/evm}"
+MAX_BACKUP_STALENESS_BLOCKS="${MAX_BACKUP_STALENESS_BLOCKS:-345600}" # 2 days at 0.5s blocks
+ALLOW_STALE_BACKUPS="${ALLOW_STALE_BACKUPS:-false}"
+SKIP_BACKUP_FRESHNESS_CHECK="${SKIP_BACKUP_FRESHNESS_CHECK:-false}"
+EXPECTED_RETH_VERSION="${EXPECTED_RETH_VERSION:-1.0.8}"
+SKIP_RETH_BACKUP_COMPATIBILITY_CHECK="${SKIP_RETH_BACKUP_COMPATIBILITY_CHECK:-false}"
+NODEOS_SYNC_TIMEOUT_SECONDS="${NODEOS_SYNC_TIMEOUT_SECONDS:-0}"
+RETH_VERIFY_TIMEOUT_SECONDS="${RETH_VERIFY_TIMEOUT_SECONDS:-300}"
+FAST_REQUIRED_GIB="${FAST_REQUIRED_GIB:-500}"
+ARCHIVE_REQUIRED_GIB="${ARCHIVE_REQUIRED_GIB:-3800}"
+if [[ -n "${TELOS_BOOTSTRAP_MODE:-}" ]]; then
+    BOOTSTRAP_MODE_EXPLICIT=true
+else
+    BOOTSTRAP_MODE_EXPLICIT=false
+    TELOS_BOOTSTRAP_MODE="fast"
+fi
 LOCAL_DEBUGGING=true
 
 # Global array to keep track of selected ports
 SELECTED_PORTS=()
+NODEOS_SNAPSHOT_ARTIFACT=""
+NODEOS_SNAPSHOT_URL=""
+NODEOS_SNAPSHOT_HEIGHT=""
+RETH_BACKUP_ARTIFACT=""
+RETH_BACKUP_URL=""
+RETH_BACKUP_MANIFEST_URL=""
+RETH_BACKUP_SHA_URL=""
+RETH_BACKUP_HEIGHT=""
+RETH_BACKUP_HASH=""
+RETH_BACKUP_SHA256=""
+RETH_BACKUP_SOURCE_DATADIR=""
+RETH_BACKUP_BINARY=""
+RETH_BACKUP_BINARY_VERSION=""
+RETH_BACKUP_BINARY_COMMIT=""
+RETH_BACKUP_CONSENSUS_BINARY=""
+LIVE_NATIVE_HEAD=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -31,9 +73,424 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+usage() {
+    cat << EOF
+Usage: $0 [--bootstrap-mode fast|archive] [--allow-stale-backups]
+
+Bootstrap modes:
+  fast     Use a nodeos state snapshot plus the reth backup. Native nodeos block
+           history starts at the snapshot block. This is the default.
+  archive  Also restore native block logs and state-history from mainnet-ship.
+           This requires multiple TiB of disk and a long transfer.
+
+Environment overrides:
+  MAX_BACKUP_STALENESS_BLOCKS=$MAX_BACKUP_STALENESS_BLOCKS
+  ALLOW_STALE_BACKUPS=$ALLOW_STALE_BACKUPS
+  NODEOS_BACKUP_BASE_URL=$NODEOS_BACKUP_BASE_URL
+  RETH_BACKUP_BASE_URL=$RETH_BACKUP_BASE_URL
+  SHIP_ARCHIVE_BASE_URL=$SHIP_ARCHIVE_BASE_URL
+  EXPECTED_RETH_VERSION=$EXPECTED_RETH_VERSION
+  SKIP_RETH_BACKUP_COMPATIBILITY_CHECK=$SKIP_RETH_BACKUP_COMPATIBILITY_CHECK
+  NODEOS_SYNC_TIMEOUT_SECONDS=$NODEOS_SYNC_TIMEOUT_SECONDS
+  RETH_VERIFY_TIMEOUT_SECONDS=$RETH_VERIFY_TIMEOUT_SECONDS
+  FAST_REQUIRED_GIB=$FAST_REQUIRED_GIB
+  ARCHIVE_REQUIRED_GIB=$ARCHIVE_REQUIRED_GIB
+EOF
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --bootstrap-mode)
+                if [[ $# -lt 2 ]]; then
+                    log_error "--bootstrap-mode requires fast or archive"
+                    exit 1
+                fi
+                TELOS_BOOTSTRAP_MODE="$2"
+                BOOTSTRAP_MODE_EXPLICIT=true
+                shift 2
+                ;;
+            --allow-stale-backups)
+                ALLOW_STALE_BACKUPS=true
+                shift
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            *)
+                log_error "Unknown argument: $1"
+                usage
+                exit 1
+                ;;
+        esac
+    done
+
+    case "$TELOS_BOOTSTRAP_MODE" in
+        fast|archive) ;;
+        *)
+            log_error "Invalid bootstrap mode '$TELOS_BOOTSTRAP_MODE'. Use fast or archive."
+            exit 1
+            ;;
+    esac
+}
+
 # Check if command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+bool_is_true() {
+    case "${1:-}" in
+        true|TRUE|yes|YES|1) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+download_url() {
+    local url="$1"
+    local output="$2"
+    local remote_size=""
+    local local_size=""
+
+    remote_size=$(curl -fsSIL "$url" | awk 'tolower($1) == "content-length:" {value=$2} END {gsub(/\r/, "", value); print value}' || true)
+    if [[ -f "$output" && "$remote_size" =~ ^[0-9]+$ ]]; then
+        local_size=$(wc -c < "$output" | tr -d ' ')
+        if (( local_size == remote_size )); then
+            log_info "$output already exists and matches remote size; skipping download"
+            return
+        fi
+
+        if (( local_size > remote_size )); then
+            log_warning "$output is larger than the remote artifact; removing local file and downloading again"
+            rm "$output"
+        fi
+    fi
+
+    curl -L --fail --retry 3 --retry-delay 2 --continue-at - "$url" --output "$output"
+}
+
+download_fresh_url() {
+    local url="$1"
+    local output="$2"
+    curl -L --fail --retry 3 --retry-delay 2 "$url" --output "$output"
+}
+
+file_sha256() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+read_manifest_value() {
+    local key="$1"
+    local file="$2"
+    awk -F= -v key="$key" '$1 == key {print substr($0, length(key) + 2); exit}' "$file"
+}
+
+parse_reth_binary_version() {
+    local binary="$1"
+    local version
+    version="$(echo "$binary" | sed -nE 's/.*[Rr]eth Version: *([^;[:space:]]+).*/\1/p')"
+    if [[ -z "$version" ]]; then
+        version="$(echo "$binary" | sed -nE 's#.*[Rr]eth/v([^/[:space:]]+).*#\1#p')"
+    fi
+    echo "$version"
+}
+
+parse_reth_binary_commit() {
+    local binary="$1"
+    echo "$binary" | sed -nE 's/.*Commit SHA: *([^;]+).*/\1/p'
+}
+
+normalize_version() {
+    local version="$1"
+    version="${version#v}"
+    version="${version%%-*}"
+    echo "$version"
+}
+
+fetch_native_head() {
+    curl -fsS "$NATIVE_RPC_URL/v1/chain/get_info" | jq -r '.head_block_num'
+}
+
+discover_latest_artifact() {
+    local base_url="$1"
+    local pattern="$2"
+    local listing
+
+    if ! listing="$(curl -fsSL "$base_url/" 2>/dev/null)"; then
+        return 0
+    fi
+
+    echo "$listing" | grep -oE "href=\"$pattern\"" | sed -E 's/^href="([^"]+)"/\1/' | sort | tail -1
+}
+
+artifact_url() {
+    local base_url="$1"
+    local artifact="$2"
+    echo "$base_url/$artifact"
+}
+
+normalize_path() {
+    local path="$1"
+
+    if realpath -m "$path" >/dev/null 2>&1; then
+        realpath -m "$path"
+    elif [[ "$path" == /* ]]; then
+        echo "$path"
+    else
+        echo "$(pwd)/$path"
+    fi
+}
+
+extract_snapshot_height() {
+    local artifact="$1"
+    local height
+    height=$(echo "$artifact" | sed -nE 's/.*-([0-9]{10})\.bin\.zst$/\1/p')
+    if [[ -n "$height" ]]; then
+        echo "$((10#$height))"
+    fi
+}
+
+dpkg_installed_version() {
+    local package="$1"
+    local query_output
+    query_output=$(dpkg-query -W -f='${Status} ${Version}' "$package" 2>/dev/null || true)
+
+    if [[ "$query_output" == install\ ok\ installed* ]]; then
+        echo "${query_output##* }"
+    fi
+}
+
+download_teloszero_core_package() {
+    log_info "Downloading TelosZero Core $TELOSZERO_CORE_VERSION..."
+    curl -L --fail --retry 3 --retry-delay 2 "$TELOSZERO_CORE_DEB_URL" --output "$TELOSZERO_CORE_DEB"
+}
+
+verify_teloszero_core_package() {
+    log_info "Verifying TelosZero Core package checksum..."
+    if ! echo "$TELOSZERO_CORE_DEB_SHA256  $TELOSZERO_CORE_DEB" | sha256sum -c - >/dev/null; then
+        log_error "Checksum verification failed for $TELOSZERO_CORE_DEB"
+        exit 1
+    fi
+}
+
+remove_conflicting_nodeos_packages() {
+    local installed_conflicts=()
+    local package
+
+    for package in "${CONFLICTING_NODEOS_PACKAGES[@]}"; do
+        if [[ -n "$(dpkg_installed_version "$package")" ]]; then
+            installed_conflicts+=("$package")
+        fi
+    done
+
+    if (( ${#installed_conflicts[@]} > 0 )); then
+        log_info "Removing conflicting nodeos packages: ${installed_conflicts[*]}"
+        DEBIAN_FRONTEND=noninteractive sudo apt-get remove -y "${installed_conflicts[@]}"
+    fi
+}
+
+load_backup_metadata() {
+    log_info "Discovering latest Telos EVM backup metadata..."
+
+    NODEOS_SNAPSHOT_ARTIFACT="$(discover_latest_artifact "$NODEOS_BACKUP_BASE_URL" 'snapshot-[^"]+\.bin\.zst')"
+    if [[ -z "$NODEOS_SNAPSHOT_ARTIFACT" ]]; then
+        log_error "Could not discover a nodeos snapshot artifact from $NODEOS_BACKUP_BASE_URL"
+        exit 1
+    fi
+    NODEOS_SNAPSHOT_URL="$(artifact_url "$NODEOS_BACKUP_BASE_URL" "$NODEOS_SNAPSHOT_ARTIFACT")"
+    NODEOS_SNAPSHOT_HEIGHT="$(extract_snapshot_height "$NODEOS_SNAPSHOT_ARTIFACT")"
+
+    local reth_manifest_artifact
+    reth_manifest_artifact="$(discover_latest_artifact "$RETH_BACKUP_BASE_URL" 'reth-data-[^"]+\.tar\.zst\.manifest\.txt')"
+    if [[ -z "$reth_manifest_artifact" ]]; then
+        log_error "Could not discover a Telos EVM 2 reth backup manifest from $RETH_BACKUP_BASE_URL"
+        log_error "Publish a Reth $EXPECTED_RETH_VERSION-compatible reth-data-*.tar.zst plus .manifest.txt and .sha256 into that folder."
+        exit 1
+    fi
+
+    RETH_BACKUP_MANIFEST_URL="$(artifact_url "$RETH_BACKUP_BASE_URL" "$reth_manifest_artifact")"
+    RETH_BACKUP_ARTIFACT="${reth_manifest_artifact%.manifest.txt}"
+    RETH_BACKUP_URL="$(artifact_url "$RETH_BACKUP_BASE_URL" "$RETH_BACKUP_ARTIFACT")"
+    RETH_BACKUP_SHA_URL="$(artifact_url "$RETH_BACKUP_BASE_URL" "$RETH_BACKUP_ARTIFACT.sha256")"
+
+    mkdir -p "$INSTALL_DIR/manifests"
+    download_fresh_url "$RETH_BACKUP_MANIFEST_URL" "$INSTALL_DIR/manifests/$reth_manifest_artifact"
+    if download_fresh_url "$RETH_BACKUP_SHA_URL" "$INSTALL_DIR/manifests/$RETH_BACKUP_ARTIFACT.sha256"; then
+        RETH_BACKUP_SHA256="$(awk '{print $1; exit}' "$INSTALL_DIR/manifests/$RETH_BACKUP_ARTIFACT.sha256")"
+    else
+        log_warning "No checksum file found for $RETH_BACKUP_ARTIFACT"
+    fi
+
+    RETH_BACKUP_HEIGHT="$(read_manifest_value height "$INSTALL_DIR/manifests/$reth_manifest_artifact")"
+    RETH_BACKUP_HASH="$(read_manifest_value hash "$INSTALL_DIR/manifests/$reth_manifest_artifact")"
+    RETH_BACKUP_SOURCE_DATADIR="$(read_manifest_value source_datadir "$INSTALL_DIR/manifests/$reth_manifest_artifact")"
+    RETH_BACKUP_BINARY="$(read_manifest_value reth_binary "$INSTALL_DIR/manifests/$reth_manifest_artifact")"
+    RETH_BACKUP_BINARY_VERSION="$(parse_reth_binary_version "$RETH_BACKUP_BINARY")"
+    RETH_BACKUP_BINARY_COMMIT="$(parse_reth_binary_commit "$RETH_BACKUP_BINARY")"
+    RETH_BACKUP_CONSENSUS_BINARY="$(read_manifest_value consensus_binary "$INSTALL_DIR/manifests/$reth_manifest_artifact")"
+
+    if [[ -z "$RETH_BACKUP_HEIGHT" ]]; then
+        log_error "Reth backup manifest does not include a height"
+        exit 1
+    fi
+
+    log_info "Nodeos snapshot: $NODEOS_SNAPSHOT_ARTIFACT${NODEOS_SNAPSHOT_HEIGHT:+ at block $NODEOS_SNAPSHOT_HEIGHT}"
+    log_info "Reth backup: $RETH_BACKUP_ARTIFACT at block $RETH_BACKUP_HEIGHT"
+    log_info "Reth backup binary: ${RETH_BACKUP_BINARY_VERSION:-unknown}${RETH_BACKUP_BINARY_COMMIT:+, commit $RETH_BACKUP_BINARY_COMMIT}"
+}
+
+validate_reth_backup_compatibility() {
+    if bool_is_true "$SKIP_RETH_BACKUP_COMPATIBILITY_CHECK"; then
+        log_warning "Skipping reth backup binary compatibility check"
+        return
+    fi
+
+    case "$EXPECTED_RETH_VERSION" in
+        any|ANY)
+            log_warning "EXPECTED_RETH_VERSION=$EXPECTED_RETH_VERSION disables exact reth backup binary compatibility checks"
+            return
+            ;;
+    esac
+
+    if [[ -z "$RETH_BACKUP_BINARY" ]]; then
+        log_error "Reth backup manifest does not include reth_binary, so compatibility cannot be verified."
+        log_error "Use a manifest that records the producer binary, or set SKIP_RETH_BACKUP_COMPATIBILITY_CHECK=true only after verifying datadir compatibility."
+        exit 1
+    fi
+
+    if [[ -z "$RETH_BACKUP_BINARY_VERSION" ]]; then
+        log_error "Could not parse Reth version from manifest reth_binary: $RETH_BACKUP_BINARY"
+        log_error "Set SKIP_RETH_BACKUP_COMPATIBILITY_CHECK=true only after verifying datadir compatibility."
+        exit 1
+    fi
+
+    local actual_version
+    local expected_version
+    local actual_major
+    local expected_major
+    actual_version="$(normalize_version "$RETH_BACKUP_BINARY_VERSION")"
+    expected_version="$(normalize_version "$EXPECTED_RETH_VERSION")"
+
+    if [[ "$actual_version" == "$expected_version" ]]; then
+        log_info "Reth backup compatibility validated: manifest Reth $actual_version matches expected Reth $expected_version"
+        return
+    fi
+
+    actual_major="${actual_version%%.*}"
+    expected_major="${expected_version%%.*}"
+
+    log_error "Reth backup binary mismatch."
+    log_error "Backup manifest reports Reth $actual_version${RETH_BACKUP_BINARY_COMMIT:+, commit $RETH_BACKUP_BINARY_COMMIT}."
+    log_error "Installer expects Reth $expected_version for telos-reth RELEASE_TAG=$RELEASE_TAG."
+    if [[ -n "$RETH_BACKUP_SOURCE_DATADIR" ]]; then
+        log_error "Backup source datadir: $RETH_BACKUP_SOURCE_DATADIR"
+    fi
+    if [[ "$actual_major" != "$expected_major" ]]; then
+        log_error "Reth datadirs are not safe to restore across major versions; do not restore a Reth $actual_major.x backup into Reth $expected_major.x."
+    fi
+    log_error "Use a backup generated by the matching telos-reth release, or set EXPECTED_RETH_VERSION to the version built by your selected RELEASE_TAG."
+    log_error "Set SKIP_RETH_BACKUP_COMPATIBILITY_CHECK=true only after independently verifying datadir compatibility."
+    exit 1
+}
+
+validate_backup_freshness() {
+    if bool_is_true "$SKIP_BACKUP_FRESHNESS_CHECK"; then
+        log_warning "Skipping backup freshness check"
+        return
+    fi
+
+    LIVE_NATIVE_HEAD="$(fetch_native_head)"
+    if [[ -z "$LIVE_NATIVE_HEAD" || "$LIVE_NATIVE_HEAD" == "null" ]]; then
+        log_error "Could not fetch live Telos mainnet head from $NATIVE_RPC_URL"
+        log_error "Set SKIP_BACKUP_FRESHNESS_CHECK=true only if you intentionally want to bypass this check."
+        exit 1
+    fi
+
+    local lag=$((LIVE_NATIVE_HEAD - RETH_BACKUP_HEIGHT))
+    if (( lag < 0 )); then
+        log_warning "Reth backup height $RETH_BACKUP_HEIGHT is ahead of live head $LIVE_NATIVE_HEAD; continuing."
+        return
+    fi
+
+    log_info "Live native head: $LIVE_NATIVE_HEAD; reth backup lag: $lag blocks"
+    if (( lag > MAX_BACKUP_STALENESS_BLOCKS )); then
+        local approx_days
+        approx_days=$(awk "BEGIN { printf \"%.1f\", $lag / 172800 }")
+        if bool_is_true "$ALLOW_STALE_BACKUPS"; then
+            log_warning "Backup is stale by $lag blocks (~$approx_days days), continuing because ALLOW_STALE_BACKUPS=true"
+        else
+            log_error "Backup is stale by $lag blocks (~$approx_days days), exceeding MAX_BACKUP_STALENESS_BLOCKS=$MAX_BACKUP_STALENESS_BLOCKS"
+            log_error "Refresh the backup or rerun with --allow-stale-backups / ALLOW_STALE_BACKUPS=true."
+            exit 1
+        fi
+    fi
+}
+
+verify_reth_backup_checksum() {
+    local backup_path="$INSTALL_DIR/$RETH_BACKUP_ARTIFACT"
+
+    if [[ -z "$RETH_BACKUP_SHA256" ]]; then
+        log_warning "No reth backup checksum available; skipping checksum verification"
+        return
+    fi
+
+    log_info "Verifying reth backup checksum..."
+    local actual_sha
+    actual_sha="$(file_sha256 "$backup_path")"
+    if [[ "$actual_sha" != "$RETH_BACKUP_SHA256" ]]; then
+        log_error "Checksum verification failed for $RETH_BACKUP_ARTIFACT"
+        log_error "Expected $RETH_BACKUP_SHA256 but got $actual_sha"
+        exit 1
+    fi
+}
+
+validate_ship_archive_metadata() {
+    if [[ "$TELOS_BOOTSTRAP_MODE" != "archive" ]]; then
+        return
+    fi
+
+    log_info "Validating native SHiP archive metadata..."
+    local status
+    local chain_info
+    local earliest_block
+    local archive_head
+    local updated_at
+
+    status="$(curl -fsSL "$SHIP_ARCHIVE_BASE_URL/BACKUP-STATUS.txt")"
+    chain_info="$(echo "$status" | sed -n 's/^chain_info=//p')"
+    updated_at="$(echo "$status" | awk -F= '$1 == "updated_at" {print $2; exit}')"
+    earliest_block="$(echo "$chain_info" | jq -r '.earliest_available_block_num')"
+    archive_head="$(echo "$chain_info" | jq -r '.head_block_num')"
+
+    if [[ "$earliest_block" != "1" ]]; then
+        log_error "Native SHiP archive does not advertise block history from block 1. earliest_available_block_num=$earliest_block"
+        exit 1
+    fi
+
+    log_info "Native SHiP archive validated: earliest block $earliest_block, head $archive_head, updated $updated_at"
+}
+
+check_disk_space() {
+    local required_gib="$FAST_REQUIRED_GIB"
+    local override_name="FAST_REQUIRED_GIB"
+    local available_kib
+    local available_gib
+
+    if [[ "$TELOS_BOOTSTRAP_MODE" == "archive" ]]; then
+        required_gib="$ARCHIVE_REQUIRED_GIB"
+        override_name="ARCHIVE_REQUIRED_GIB"
+    fi
+
+    available_kib=$(df -Pk "$INSTALL_DIR" | awk 'NR == 2 {print $4}')
+    available_gib=$((available_kib / 1024 / 1024))
+
+    log_info "Available disk at $INSTALL_DIR: ${available_gib} GiB; required for $TELOS_BOOTSTRAP_MODE mode: ${required_gib} GiB"
+    if (( available_gib < required_gib )); then
+        log_error "Not enough free disk space for $TELOS_BOOTSTRAP_MODE mode."
+        log_error "Use a larger install directory or override $override_name only if you have verified the sizing."
+        exit 1
+    fi
 }
 
 # Function to check and set a port
@@ -47,12 +504,14 @@ check_and_set_port() {
     selected_port="${selected_port:-$default_port}"
 
     # Check if the port is already selected in this session
-    for port in "${SELECTED_PORTS[@]}"; do
-      if [[ "$port" == "$selected_port" ]]; then
-        log_info "Port $selected_port has already been selected in this process. Please choose another."
-        continue 2  # Skip to the next iteration of the outer while loop
-      fi
-    done
+    if (( ${#SELECTED_PORTS[@]} > 0 )); then
+      for port in "${SELECTED_PORTS[@]}"; do
+        if [[ "$port" == "$selected_port" ]]; then
+          log_info "Port $selected_port has already been selected in this process. Please choose another."
+          continue 2  # Skip to the next iteration of the outer while loop
+        fi
+      done
+    fi
 
     # Check if the port is in use
     if lsof -iTCP:"$selected_port" -sTCP:LISTEN &>/dev/null; then
@@ -86,6 +545,30 @@ init_inputs() {
       RELEASE_TAG="$USER_TAG"
   fi
 
+  if ! bool_is_true "$BOOTSTRAP_MODE_EXPLICIT"; then
+      read -p "Bootstrap mode: fast or archive (default: $TELOS_BOOTSTRAP_MODE): " USER_BOOTSTRAP_MODE
+      if [ -n "$USER_BOOTSTRAP_MODE" ]; then
+          TELOS_BOOTSTRAP_MODE="$USER_BOOTSTRAP_MODE"
+      fi
+  fi
+  case "$TELOS_BOOTSTRAP_MODE" in
+    fast)
+      log_info "Fast mode selected: nodeos will start from a state snapshot, so native nodeos block history starts at the snapshot block."
+      ;;
+    archive)
+      log_warning "Archive mode selected: this restores native block logs and SHiP state-history and can require more than 3 TiB."
+      read -p "Type yes to continue with archive mode: " ARCHIVE_CONFIRM
+      if [[ "$ARCHIVE_CONFIRM" != "yes" ]]; then
+          log_error "Archive mode was not confirmed"
+          exit 1
+      fi
+      ;;
+    *)
+      log_error "Invalid bootstrap mode '$TELOS_BOOTSTRAP_MODE'. Use fast or archive."
+      exit 1
+      ;;
+  esac
+
   REGION="west"
   read -p "For peering with other nodes, are you in the East (Asia/Europe) or West(North/South America). Options are east or west (default: west): " USER_REGION
   if [ -n "$USER_REGION" ]; then
@@ -111,7 +594,7 @@ init_inputs() {
   RETH_AUTH_RPC_PORT=$(check_and_set_port "Enter the Auth RPC port for reth (this is where the consensus client connects via JWT, will be hosted on 127.0.0.1)" 8551)
   RETH_DISCOVERY_PORT=$(check_and_set_port "Enter the discovery port for reth (not used for discovery but reth wants to open it anyway, will be hosted on 127.0.0.1)" 30303)
 
-  INSTALL_DIR=$(realpath -m "$INSTALL_DIR")
+  INSTALL_DIR=$(normalize_path "$INSTALL_DIR")
 }
 
 # Initialize workspace
@@ -124,13 +607,13 @@ init_workspace() {
 # Install dependencies
 install_dependencies() {
     log_info "Installing system dependencies..."
-    if ! sudo apt update; then
+    if ! sudo apt-get update; then
         log_error "Failed to update package lists"
         exit 1
     fi
 
     # TODO: Avoid the prompt for timezone
-    if ! DEBIAN_FRONTEND=noninteractive sudo apt install -y \
+    if ! DEBIAN_FRONTEND=noninteractive sudo apt-get install -y \
         git \
         curl \
         build-essential \
@@ -141,6 +624,10 @@ install_dependencies() {
         zstd \
         pkg-config \
         jq \
+        libatomic1 \
+        libcurl4 \
+        libgmp10 \
+        zlib1g \
         libssl-dev;
     then
         log_error "Failed to install dependencies"
@@ -162,12 +649,35 @@ install_rust() {
 
 # Install Nodeos
 install_nodeos() {
-    if ! command_exists nodeos; then
-        log_info "Installing Nodeos..."
-        curl -L $LEAP_DEB_URL --output $LEAP_DEB
-        sudo dpkg -i $LEAP_DEB
+    local installed_version
+    installed_version="$(dpkg_installed_version "$TELOSZERO_CORE_PACKAGE")"
+
+    if [[ "$installed_version" == "$TELOSZERO_CORE_VERSION" ]]; then
+        log_info "TelosZero Core $TELOSZERO_CORE_VERSION is already installed"
     else
-        log_info "Nodeos is already installed"
+        if [[ -n "$installed_version" ]]; then
+            log_info "Upgrading TelosZero Core from $installed_version to $TELOSZERO_CORE_VERSION..."
+        elif command_exists nodeos; then
+            log_warning "nodeos is installed, but $TELOSZERO_CORE_PACKAGE $TELOSZERO_CORE_VERSION is not. Replacing old nodeos packages with TelosZero Core."
+        else
+            log_info "Installing TelosZero Core $TELOSZERO_CORE_VERSION..."
+        fi
+
+        download_teloszero_core_package
+        verify_teloszero_core_package
+        remove_conflicting_nodeos_packages
+        DEBIAN_FRONTEND=noninteractive sudo apt-get install -y "./$TELOSZERO_CORE_DEB"
+    fi
+
+    installed_version="$(dpkg_installed_version "$TELOSZERO_CORE_PACKAGE")"
+    if [[ "$installed_version" != "$TELOSZERO_CORE_VERSION" ]]; then
+        log_error "Expected $TELOSZERO_CORE_PACKAGE $TELOSZERO_CORE_VERSION, found '${installed_version:-not installed}'"
+        exit 1
+    fi
+
+    if ! command_exists nodeos; then
+        log_error "TelosZero Core installation completed, but nodeos was not found on PATH"
+        exit 1
     fi
 }
 
@@ -488,21 +998,100 @@ download_snapshot() {
         mkdir snapshots
     fi
     cd snapshots || exit 1
-    curl http://storage.telos.net/evm_backups/mainnet/latest-nodeos.bin.zst --output latest-nodeos.bin.zst
-    unzstd latest-nodeos.bin.zst
+    if [[ ! -f "${NODEOS_SNAPSHOT_ARTIFACT%.zst}" ]]; then
+        if [[ ! -f "$NODEOS_SNAPSHOT_ARTIFACT" ]]; then
+            download_url "$NODEOS_SNAPSHOT_URL" "$NODEOS_SNAPSHOT_ARTIFACT"
+        fi
+        unzstd -f "$NODEOS_SNAPSHOT_ARTIFACT"
+    else
+        log_info "Nodeos snapshot already decompressed"
+    fi
     cd $INSTALL_DIR
+}
+
+download_http_directory_files() {
+    local source_url="$1"
+    local dest_dir="$2"
+    local listing
+    local files
+    local file
+
+    mkdir -p "$dest_dir"
+    listing="$(curl -fsSL "$source_url/")"
+    files=$(echo "$listing" | grep -oE 'href="[^"]+"' | sed -E 's/^href="([^"]+)"/\1/' | grep -Ev '/$|^\.\.$|^/$' || true)
+
+    while IFS= read -r file; do
+        if [[ -z "$file" ]]; then
+            continue
+        fi
+
+        log_info "Downloading $source_url/$file"
+        download_url "$source_url/$file" "$dest_dir/$file"
+    done <<< "$files"
+}
+
+restore_ship_archive() {
+    if [[ "$TELOS_BOOTSTRAP_MODE" != "archive" ]]; then
+        log_info "Fast mode selected; skipping native block/state-history archive restore"
+        return
+    fi
+
+    log_info "Restoring native block logs and SHiP state-history into nodeos-ship..."
+    log_info "nodeos-http remains snapshot-backed; use nodeos-ship for native historical blocks/SHiP history."
+    log_warning "This may download more than 3 TiB and can take a long time."
+
+    local ship_data_dir="$INSTALL_DIR/nodeos-ship/data"
+    mkdir -p "$ship_data_dir/blocks" "$ship_data_dir/state-history/retained"
+
+    download_http_directory_files "$SHIP_ARCHIVE_BASE_URL/backup_blocks" "$ship_data_dir/blocks"
+    download_http_directory_files "$SHIP_ARCHIVE_BASE_URL/backup_state-history" "$ship_data_dir/state-history"
+    download_http_directory_files "$SHIP_ARCHIVE_BASE_URL/backup_state-history/retained" "$ship_data_dir/state-history/retained"
 }
 
 # Start nodeos
 start_nodeos() {
+    local snapshot_path="../snapshots/${NODEOS_SNAPSHOT_ARTIFACT%.zst}"
+
     log_info "Starting nodeos..."
     cd $INSTALL_DIR/nodeos-http || exit 1
-    bash start.sh --snapshot ../snapshots/latest-nodeos.bin
+    bash start.sh --snapshot "$snapshot_path"
     log_info "HTTP nodeos started successfully"
     cd $INSTALL_DIR/nodeos-ship || exit 1
-    bash start.sh --snapshot ../snapshots/latest-nodeos.bin
+    bash start.sh --snapshot "$snapshot_path"
     log_info "SHIP nodeos started successfully"
     cd $INSTALL_DIR
+}
+
+fetch_local_nodeos_head() {
+    curl -fsS "http://127.0.0.1:$NODEOS_HTTP_RPC_PORT/v1/chain/get_info" | jq -r '.head_block_num'
+}
+
+wait_for_nodeos_height() {
+    local target_height="$1"
+    local start_time=$SECONDS
+    local head=""
+
+    if [[ -z "$target_height" ]]; then
+        log_warning "No target nodeos height was supplied; skipping nodeos catch-up wait"
+        return
+    fi
+
+    log_info "Waiting for nodeos to reach reth backup height $target_height..."
+    while true; do
+        head="$(fetch_local_nodeos_head 2>/dev/null || true)"
+        if [[ "$head" =~ ^[0-9]+$ ]] && (( head >= target_height )); then
+            log_info "Nodeos reached block $head"
+            return
+        fi
+
+        if (( NODEOS_SYNC_TIMEOUT_SECONDS > 0 && SECONDS - start_time > NODEOS_SYNC_TIMEOUT_SECONDS )); then
+            log_error "Timed out waiting for nodeos to reach $target_height; latest observed head was '${head:-unavailable}'"
+            exit 1
+        fi
+
+        log_info "Nodeos head is '${head:-unavailable}', waiting..."
+        sleep 10
+    done
 }
 
 # Clone repositories
@@ -543,15 +1132,24 @@ download_backup() {
     cd $INSTALL_DIR
     log_info "Downloading reth backup..."
     if [ ! -d ./telos-reth-data ]; then
-      curl http://storage.telos.net/evm_backups/mainnet/latest-reth.tar.zst --output latest-reth.tar.zst
+      if [[ ! -f "$RETH_BACKUP_ARTIFACT" ]]; then
+        download_url "$RETH_BACKUP_URL" "$RETH_BACKUP_ARTIFACT"
+      fi
+      verify_reth_backup_checksum
+    else
+      log_info "Existing telos-reth-data directory found; skipping reth backup download"
     fi
 }
 
 # Extract backup
 extract_backup() {
     cd $INSTALL_DIR
-    log_info "Extracting reth backup..."
-    tar --zstd -xvf latest-reth.tar.zst
+    if [ ! -d ./telos-reth-data ]; then
+        log_info "Extracting reth backup..."
+        tar --zstd -xvf "$RETH_BACKUP_ARTIFACT"
+    else
+        log_info "Existing telos-reth-data directory found; skipping reth backup extraction"
+    fi
     cd $INSTALL_DIR
 }
 
@@ -612,6 +1210,41 @@ start_reth() {
     bash start.sh
     log_info "Reth started successfully"
     cd $INSTALL_DIR
+}
+
+eth_rpc() {
+    local payload="$1"
+    curl -fsS -X POST \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        "http://127.0.0.1:$RETH_RPC_PORT"
+}
+
+verify_reth_history() {
+    local start_time=$SECONDS
+    local block_zero=""
+    local finalized_block=""
+
+    log_info "Verifying reth RPC and restored EVM history..."
+    while true; do
+        block_zero="$(eth_rpc '{"method": "eth_getBlockByNumber", "params": ["0x0", false], "id": 1, "jsonrpc": "2.0"}' 2>/dev/null || true)"
+        finalized_block="$(eth_rpc '{"method": "eth_getBlockByNumber", "params": ["finalized", false], "id": 1, "jsonrpc": "2.0"}' 2>/dev/null || true)"
+
+        if [[ -n "$block_zero" && -n "$finalized_block" ]] \
+            && echo "$block_zero" | jq -e '.result.number == "0x0"' >/dev/null 2>&1 \
+            && echo "$finalized_block" | jq -e '.result.number' >/dev/null 2>&1; then
+            log_info "Reth restored EVM block 0 and finalized block history successfully"
+            return
+        fi
+
+        if (( RETH_VERIFY_TIMEOUT_SECONDS > 0 && SECONDS - start_time > RETH_VERIFY_TIMEOUT_SECONDS )); then
+            log_error "Timed out verifying reth history. Check $INSTALL_DIR/telos-reth/reth.log"
+            exit 1
+        fi
+
+        log_info "Reth RPC is not ready or history is not available yet, retrying..."
+        sleep 5
+    done
 }
 
 # Fetch block info from reth
@@ -726,8 +1359,8 @@ cleanup_downloads() {
     log_info "Cleaning up downloaded installation files..."
     
     # Clean up the reth backup file
-    local reth_backup="$INSTALL_DIR/latest-reth.tar.zst"
-    if [[ -f "$reth_backup" ]]; then
+    local reth_backup="$INSTALL_DIR/$RETH_BACKUP_ARTIFACT"
+    if [[ -n "$RETH_BACKUP_ARTIFACT" && -f "$reth_backup" ]]; then
         # We only delete the backup if the extracted directory exists, ensuring data safety
         if [[ -d "$INSTALL_DIR/telos-reth-data" ]]; then
             if rm "$reth_backup"; then
@@ -740,15 +1373,15 @@ cleanup_downloads() {
         fi
     fi
     
-    # Clean up the Leap DEB package
-    local leap_deb="$INSTALL_DIR/$LEAP_DEB"
-    if [[ -f "$leap_deb" ]]; then
+    # Clean up the TelosZero Core DEB package
+    local teloszero_core_deb="$INSTALL_DIR/$TELOSZERO_CORE_DEB"
+    if [[ -f "$teloszero_core_deb" ]]; then
         # We only delete the DEB if nodeos is successfully installed
         if command_exists nodeos; then
-            if rm "$leap_deb"; then
-                log_info "Successfully removed Leap DEB package: $leap_deb"
+            if rm "$teloszero_core_deb"; then
+                log_info "Successfully removed TelosZero Core DEB package: $teloszero_core_deb"
             else
-                log_warning "Failed to remove Leap DEB package: $leap_deb. You may want to remove it manually."
+                log_warning "Failed to remove TelosZero Core DEB package: $teloszero_core_deb. You may want to remove it manually."
             fi
         else
             log_warning "Nodeos installation not verified. Keeping DEB package for safety."
@@ -761,6 +1394,14 @@ log_install_details() {
     log_info "Installation details:"
     log_info "Install directory: $INSTALL_DIR"
     log_info "Release tag: $RELEASE_TAG"
+    log_info "TelosZero Core version: $TELOSZERO_CORE_VERSION"
+    log_info "Bootstrap mode: $TELOS_BOOTSTRAP_MODE"
+    log_info "Nodeos snapshot artifact: ${NODEOS_SNAPSHOT_ARTIFACT:-unknown}"
+    log_info "Nodeos native history starts at snapshot block: ${NODEOS_SNAPSHOT_HEIGHT:-unknown}"
+    log_info "Reth backup artifact: ${RETH_BACKUP_ARTIFACT:-unknown}"
+    log_info "Reth backup height: ${RETH_BACKUP_HEIGHT:-unknown}"
+    log_info "Reth backup binary version: ${RETH_BACKUP_BINARY_VERSION:-unknown}"
+    log_info "Expected reth binary version: $EXPECTED_RETH_VERSION"
     log_info "Region: $REGION"
     log_info "Nodeos HTTP RPC port: http://127.0.0.1:$NODEOS_HTTP_RPC_PORT"
     log_info "Nodeos HTTP P2P port: 127.0.0.1:$NODEOS_HTTP_P2P_PORT"
@@ -789,24 +1430,32 @@ log_install_details() {
 
 # Main execution
 main() {
+    parse_args "$@"
     log_info "Starting Telos node setup..."
-    
     init_inputs
-    install_dependencies
     init_workspace
+    load_backup_metadata
+    validate_reth_backup_compatibility
+    check_disk_space
+    install_dependencies
+    validate_backup_freshness
+    validate_ship_archive_metadata
     install_rust
     install_nodeos
     download_snapshot
     setup_logrotate
     setup_nodeos
+    restore_ship_archive
     start_nodeos
     clone_repos
     build_clients
     download_backup
     extract_backup
+    wait_for_nodeos_height "$RETH_BACKUP_HEIGHT"
     get_jwt_secret
     generate_reth_config
     start_reth
+    verify_reth_history
     fetch_block_info
     generate_consensus_config
     start_consensus_client
@@ -818,4 +1467,4 @@ main() {
 }
 
 # Run the script
-main
+main "$@"
