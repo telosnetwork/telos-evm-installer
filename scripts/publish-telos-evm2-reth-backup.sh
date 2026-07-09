@@ -19,6 +19,10 @@ MAX_LAG=${RETH_BACKUP_MAX_LAG:-5000}
 
 RETH_SERVICE=${RETH_SERVICE:-}
 CONSENSUS_SERVICE=${CONSENSUS_SERVICE:-}
+RETH_STOP_COMMAND=${RETH_STOP_COMMAND:-}
+RETH_START_COMMAND=${RETH_START_COMMAND:-}
+CONSENSUS_STOP_COMMAND=${CONSENSUS_STOP_COMMAND:-}
+CONSENSUS_START_COMMAND=${CONSENSUS_START_COMMAND:-}
 STOP_SERVICES=${RETH_BACKUP_STOP_SERVICES:-0}
 
 KEY=${STORAGEBOX_KEY:-/root/.ssh/storagebox_ed25519}
@@ -83,12 +87,12 @@ if [[ ! -d "$DATA_DIR" ]]; then
   exit 1
 fi
 if [[ ! -f "$KEY" ]]; then
-  write_status failed "Storagebox key is missing."
+  echo "Storagebox key is missing: $KEY" >&2
   exit 1
 fi
 
-ssh -i "$KEY" -p "$REMOTE_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-  "$REMOTE" "mkdir -p $REMOTE_BASE"
+mkdir -p "$STAGE_ROOT/remote-dir/$REMOTE_BASE"
+rsync -a -e "$RSYNC_SSH" "$STAGE_ROOT/remote-dir/$REMOTE_BASE/" "$REMOTE:$REMOTE_BASE/"
 
 client_version="$(rpc_result "$LOCAL_RPC" web3_clientVersion "[]" || true)"
 reth_version="$(version_from_client "$client_version")"
@@ -142,18 +146,28 @@ restart_reth=0
 restart_consensus=0
 if [[ "$STOP_SERVICES" == "1" ]]; then
   write_status finalizing "Stopping configured services for final staging rsync."
-  if [[ -n "$CONSENSUS_SERVICE" ]] && systemctl is-active --quiet "$CONSENSUS_SERVICE"; then
+  if [[ -n "$CONSENSUS_STOP_COMMAND" ]]; then
+    restart_consensus=1
+    bash -lc "$CONSENSUS_STOP_COMMAND"
+  elif [[ -n "$CONSENSUS_SERVICE" ]] && systemctl is-active --quiet "$CONSENSUS_SERVICE"; then
     restart_consensus=1
     systemctl stop "$CONSENSUS_SERVICE"
   fi
-  if [[ -n "$RETH_SERVICE" ]] && systemctl is-active --quiet "$RETH_SERVICE"; then
+  if [[ -n "$RETH_STOP_COMMAND" ]]; then
+    restart_reth=1
+    bash -lc "$RETH_STOP_COMMAND"
+  elif [[ -n "$RETH_SERVICE" ]] && systemctl is-active --quiet "$RETH_SERVICE"; then
     restart_reth=1
     systemctl stop "$RETH_SERVICE"
   fi
 fi
 restart_services() {
-  if [[ "$restart_reth" == "1" ]]; then systemctl start "$RETH_SERVICE" || true; fi
-  if [[ "$restart_consensus" == "1" ]]; then systemctl start "$CONSENSUS_SERVICE" || true; fi
+  if [[ "$restart_reth" == "1" ]]; then
+    if [[ -n "$RETH_START_COMMAND" ]]; then bash -lc "$RETH_START_COMMAND" || true; else systemctl start "$RETH_SERVICE" || true; fi
+  fi
+  if [[ "$restart_consensus" == "1" ]]; then
+    if [[ -n "$CONSENSUS_START_COMMAND" ]]; then bash -lc "$CONSENSUS_START_COMMAND" || true; else systemctl start "$CONSENSUS_SERVICE" || true; fi
+  fi
 }
 trap restart_services EXIT
 ionice -c2 -n7 nice -n 10 rsync "${rsync_common[@]}" "$DATA_DIR/" "$STAGE_DIR/"

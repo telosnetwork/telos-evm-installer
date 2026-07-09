@@ -188,7 +188,12 @@ read_manifest_value() {
 
 parse_reth_binary_version() {
     local binary="$1"
-    echo "$binary" | sed -nE 's/.*Reth Version: *([^;[:space:]]+).*/\1/p'
+    local version
+    version="$(echo "$binary" | sed -nE 's/.*[Rr]eth Version: *([^;[:space:]]+).*/\1/p')"
+    if [[ -z "$version" ]]; then
+        version="$(echo "$binary" | sed -nE 's#.*[Rr]eth/v([^/[:space:]]+).*#\1#p')"
+    fi
+    echo "$version"
 }
 
 parse_reth_binary_commit() {
@@ -199,6 +204,7 @@ parse_reth_binary_commit() {
 normalize_version() {
     local version="$1"
     version="${version#v}"
+    version="${version%%-*}"
     echo "$version"
 }
 

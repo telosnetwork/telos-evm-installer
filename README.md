@@ -180,6 +180,16 @@ CONSENSUS_SERVICE=telos-consensus-client.service \
 scripts/publish-telos-evm2-reth-backup.sh
 ```
 
+If the node is managed by local start/stop scripts instead of systemd units, provide commands:
+```bash
+RETH_BACKUP_STOP_SERVICES=1 \
+RETH_STOP_COMMAND=/telos/telos-reth/stop.sh \
+RETH_START_COMMAND=/telos/telos-reth/start.sh \
+CONSENSUS_STOP_COMMAND=/telos/telos-consensus-client/stop.sh \
+CONSENSUS_START_COMMAND=/telos/telos-consensus-client/start.sh \
+scripts/publish-telos-evm2-reth-backup.sh
+```
+
 ## Log Management
 
 The script configures logrotate for all service logs:
