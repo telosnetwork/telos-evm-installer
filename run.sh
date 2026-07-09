@@ -21,6 +21,7 @@ EVM_RPC_URL="${EVM_RPC_URL:-https://rpc.telos.net/evm}"
 MAX_BACKUP_STALENESS_BLOCKS="${MAX_BACKUP_STALENESS_BLOCKS:-345600}" # 2 days at 0.5s blocks
 ALLOW_STALE_BACKUPS="${ALLOW_STALE_BACKUPS:-false}"
 SKIP_BACKUP_FRESHNESS_CHECK="${SKIP_BACKUP_FRESHNESS_CHECK:-false}"
+STRICT_BACKUP_FRESHNESS_CHECK="${STRICT_BACKUP_FRESHNESS_CHECK:-false}"
 EXPECTED_RETH_VERSION="${EXPECTED_RETH_VERSION:-1.0.8}"
 SKIP_RETH_BACKUP_COMPATIBILITY_CHECK="${SKIP_RETH_BACKUP_COMPATIBILITY_CHECK:-false}"
 NODEOS_SYNC_TIMEOUT_SECONDS="${NODEOS_SYNC_TIMEOUT_SECONDS:-0}"
@@ -85,6 +86,7 @@ Bootstrap modes:
 
 Environment overrides:
   MAX_BACKUP_STALENESS_BLOCKS=$MAX_BACKUP_STALENESS_BLOCKS
+  STRICT_BACKUP_FRESHNESS_CHECK=$STRICT_BACKUP_FRESHNESS_CHECK
   ALLOW_STALE_BACKUPS=$ALLOW_STALE_BACKUPS
   NODEOS_BACKUP_BASE_URL=$NODEOS_BACKUP_BASE_URL
   RETH_BACKUP_BASE_URL=$RETH_BACKUP_BASE_URL
@@ -224,6 +226,33 @@ discover_latest_artifact() {
     echo "$listing" | grep -oE "href=\"$pattern\"" | sed -E 's/^href="([^"]+)"/\1/' | sort | tail -1
 }
 
+discover_latest_snapshot_at_or_before() {
+    local base_url="$1"
+    local max_height="$2"
+    local listing
+    local artifact
+    local height
+    local best_artifact=""
+    local best_height=0
+
+    if ! listing="$(curl -fsSL "$base_url/" 2>/dev/null)"; then
+        return 0
+    fi
+
+    while IFS= read -r artifact; do
+        height="$(extract_snapshot_height "$artifact")"
+        if [[ -z "$height" ]]; then
+            continue
+        fi
+        if (( height <= max_height && height > best_height )); then
+            best_artifact="$artifact"
+            best_height="$height"
+        fi
+    done < <(echo "$listing" | grep -oE 'href="snapshot-[^"]+\.bin\.zst"' | sed -E 's/^href="([^"]+)"/\1/')
+
+    echo "$best_artifact"
+}
+
 artifact_url() {
     local base_url="$1"
     local artifact="$2"
@@ -293,14 +322,6 @@ remove_conflicting_nodeos_packages() {
 load_backup_metadata() {
     log_info "Discovering latest Telos EVM backup metadata..."
 
-    NODEOS_SNAPSHOT_ARTIFACT="$(discover_latest_artifact "$NODEOS_BACKUP_BASE_URL" 'snapshot-[^"]+\.bin\.zst')"
-    if [[ -z "$NODEOS_SNAPSHOT_ARTIFACT" ]]; then
-        log_error "Could not discover a nodeos snapshot artifact from $NODEOS_BACKUP_BASE_URL"
-        exit 1
-    fi
-    NODEOS_SNAPSHOT_URL="$(artifact_url "$NODEOS_BACKUP_BASE_URL" "$NODEOS_SNAPSHOT_ARTIFACT")"
-    NODEOS_SNAPSHOT_HEIGHT="$(extract_snapshot_height "$NODEOS_SNAPSHOT_ARTIFACT")"
-
     local reth_manifest_artifact
     reth_manifest_artifact="$(discover_latest_artifact "$RETH_BACKUP_BASE_URL" 'reth-data-[^"]+\.tar\.zst\.manifest\.txt')"
     if [[ -z "$reth_manifest_artifact" ]]; then
@@ -330,10 +351,27 @@ load_backup_metadata() {
     RETH_BACKUP_BINARY_COMMIT="$(parse_reth_binary_commit "$RETH_BACKUP_BINARY")"
     RETH_BACKUP_CONSENSUS_BINARY="$(read_manifest_value consensus_binary "$INSTALL_DIR/manifests/$reth_manifest_artifact")"
 
-    if [[ -z "$RETH_BACKUP_HEIGHT" ]]; then
-        log_error "Reth backup manifest does not include a height"
+    if [[ -z "$RETH_BACKUP_HEIGHT" || ! "$RETH_BACKUP_HEIGHT" =~ ^[0-9]+$ ]]; then
+        log_error "Reth backup manifest does not include a valid numeric height"
         exit 1
     fi
+
+    if [[ "$TELOS_BOOTSTRAP_MODE" == "fast" ]]; then
+        NODEOS_SNAPSHOT_ARTIFACT="$(discover_latest_snapshot_at_or_before "$NODEOS_BACKUP_BASE_URL" "$RETH_BACKUP_HEIGHT")"
+        if [[ -z "$NODEOS_SNAPSHOT_ARTIFACT" ]]; then
+            log_error "Could not discover a nodeos snapshot at or before Reth backup height $RETH_BACKUP_HEIGHT from $NODEOS_BACKUP_BASE_URL"
+            log_error "Fast mode needs native blocks from the Reth backup height forward. Publish a matching nodeos snapshot, publish a newer Reth backup, or use archive mode."
+            exit 1
+        fi
+    else
+        NODEOS_SNAPSHOT_ARTIFACT="$(discover_latest_artifact "$NODEOS_BACKUP_BASE_URL" 'snapshot-[^"]+\.bin\.zst')"
+        if [[ -z "$NODEOS_SNAPSHOT_ARTIFACT" ]]; then
+            log_error "Could not discover a nodeos snapshot artifact from $NODEOS_BACKUP_BASE_URL"
+            exit 1
+        fi
+    fi
+    NODEOS_SNAPSHOT_URL="$(artifact_url "$NODEOS_BACKUP_BASE_URL" "$NODEOS_SNAPSHOT_ARTIFACT")"
+    NODEOS_SNAPSHOT_HEIGHT="$(extract_snapshot_height "$NODEOS_SNAPSHOT_ARTIFACT")"
 
     log_info "Nodeos snapshot: $NODEOS_SNAPSHOT_ARTIFACT${NODEOS_SNAPSHOT_HEIGHT:+ at block $NODEOS_SNAPSHOT_HEIGHT}"
     log_info "Reth backup: $RETH_BACKUP_ARTIFACT at block $RETH_BACKUP_HEIGHT"
@@ -402,9 +440,13 @@ validate_backup_freshness() {
 
     LIVE_NATIVE_HEAD="$(fetch_native_head)"
     if [[ -z "$LIVE_NATIVE_HEAD" || "$LIVE_NATIVE_HEAD" == "null" ]]; then
-        log_error "Could not fetch live Telos mainnet head from $NATIVE_RPC_URL"
-        log_error "Set SKIP_BACKUP_FRESHNESS_CHECK=true only if you intentionally want to bypass this check."
-        exit 1
+        if bool_is_true "$STRICT_BACKUP_FRESHNESS_CHECK"; then
+            log_error "Could not fetch live Telos mainnet head from $NATIVE_RPC_URL"
+            log_error "Set SKIP_BACKUP_FRESHNESS_CHECK=true only if you intentionally want to bypass this check."
+            exit 1
+        fi
+        log_warning "Could not fetch live Telos mainnet head from $NATIVE_RPC_URL; continuing without backup age estimate."
+        return
     fi
 
     local lag=$((LIVE_NATIVE_HEAD - RETH_BACKUP_HEIGHT))
@@ -417,13 +459,12 @@ validate_backup_freshness() {
     if (( lag > MAX_BACKUP_STALENESS_BLOCKS )); then
         local approx_days
         approx_days=$(awk "BEGIN { printf \"%.1f\", $lag / 172800 }")
-        if bool_is_true "$ALLOW_STALE_BACKUPS"; then
-            log_warning "Backup is stale by $lag blocks (~$approx_days days), continuing because ALLOW_STALE_BACKUPS=true"
-        else
+        if bool_is_true "$STRICT_BACKUP_FRESHNESS_CHECK" && ! bool_is_true "$ALLOW_STALE_BACKUPS"; then
             log_error "Backup is stale by $lag blocks (~$approx_days days), exceeding MAX_BACKUP_STALENESS_BLOCKS=$MAX_BACKUP_STALENESS_BLOCKS"
             log_error "Refresh the backup or rerun with --allow-stale-backups / ALLOW_STALE_BACKUPS=true."
             exit 1
         fi
+        log_warning "Reth backup is $lag blocks behind live head (~$approx_days days); continuing and allowing the node to sync forward."
     fi
 }
 
