@@ -1,5 +1,6 @@
 """Offline contract tests for the signed sparse-node installer."""
 
+import contextlib
 import hashlib
 import json
 from pathlib import Path
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -187,6 +189,104 @@ class InstallerTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(ROOT / "install.py"), "check", "--bundle",
                                str(self.bundle), "--trust-key", str(self.public), *options],
                               capture_output=True, text=True)
+
+    @contextlib.contextmanager
+    def isolated_install(self, *, fail_consensus=False):
+        (self.bundle / "telos-checkpoint-bootstrap").chmod(0o755)
+        bundle = install.Bundle(self.bundle, self.public)
+        scenario = getattr(self, "_install_scenario", 0) + 1
+        self._install_scenario = scenario
+        sandbox = self.root / f"install-root-{scenario}"
+        config = sandbox / "etc/telos-reth/mainnet"
+        bootstrap = sandbox / "var/lib/telos-reth-bootstrap/mainnet"
+        data = sandbox / "var/lib/telos-reth/mainnet"
+        calls = []
+        original_install_file = install.install_file
+
+        def staged_file(source, target, mode, uid=0, gid=0):
+            target = Path(target)
+            if str(target).startswith(("/etc/", "/usr/local/")):
+                target = sandbox / target.relative_to("/")
+            original_install_file(source, target, mode, uid, gid)
+
+        def command(*args):
+            calls.append(tuple(map(str, args)))
+            if args[:2] == ("getent", "group"):
+                return "telos-reth-config:x:311:"
+            if args[:2] == ("id", "-u"):
+                return "310"
+            if args[:2] == ("id", "-g"):
+                return "310"
+            if (fail_consensus and args[:3] == ("systemctl", "enable", "--now")
+                    and args[3] == install.CONSENSUS_UNIT):
+                raise subprocess.CalledProcessError(1, args)
+            return ""
+
+        def process(args, **kwargs):
+            calls.append(tuple(map(str, args)))
+            if Path(args[0]).resolve() == (self.bundle / "telos-checkpoint-bootstrap").resolve():
+                self.assertIn("--storage.v2=true", args)
+                data.mkdir(parents=True)
+                for name in ("checkpoint.anchor.json", "checkpoint.audit.json"):
+                    (bootstrap / name).write_bytes((self.bundle / name).read_bytes())
+            else:
+                self.assertEqual(args[:2], ["systemctl", "disable"])
+            return subprocess.CompletedProcess(args, 0)
+
+        def local_rpc(url, method, params):
+            calls.append(("rpc", method))
+            self.assertEqual(url, "http://127.0.0.1:18545")
+            if method == "eth_chainId":
+                return "0x28"
+            self.assertEqual(params, [hex(self.manifest["history_from_block"]), False])
+            return {"hash": self.anchor_hash}
+
+        with contextlib.ExitStack() as stack:
+            for name, value in (
+                ("CONFIG_ROOT", config), ("DATA_ROOT", data),
+                ("CONSENSUS_PARENT", sandbox / "var/lib/telos-consensus"),
+                ("SNAPSHOT_PARENT", sandbox / "var/lib/telos-reth-snapshots"),
+                ("BOOTSTRAP_ROOT", bootstrap),
+                ("RELEASE_HELPER", sandbox / "usr/local/libexec/telos-reth-release"),
+            ):
+                stack.enter_context(mock.patch.object(install, name, value))
+            stack.enter_context(mock.patch.object(install, "host_preflight"))
+            stack.enter_context(mock.patch.object(install, "install_file", side_effect=staged_file))
+            stack.enter_context(mock.patch.object(install, "run", side_effect=command))
+            stack.enter_context(mock.patch.object(install.subprocess, "run", side_effect=process))
+            stack.enter_context(mock.patch.object(install.os, "chown"))
+            stack.enter_context(mock.patch.object(install, "rpc", side_effect=local_rpc))
+            yield bundle, sandbox, calls
+
+    def test_isolated_staged_install_flow(self):
+        with self.isolated_install() as (bundle, sandbox, calls):
+            install.install(bundle, start=False)
+        config = sandbox / "etc/telos-reth/mainnet"
+        self.assertEqual((config / "checkpoint.audit.json").read_bytes(),
+                         (self.bundle / "checkpoint.audit.json").read_bytes())
+        self.assertRegex((config / "jwt.hex").read_text(), r"\A[0-9a-f]{64}\n\Z")
+        self.assertEqual((config / "jwt.hex").stat().st_mode & 0o777, 0o400)
+        self.assertTrue((sandbox / "etc/systemd/system/telos-reth@.service").is_file())
+        self.assertTrue((sandbox / "usr/local/libexec/telos-reth-release").is_file())
+        self.assertFalse(any(call[:3] == ("systemctl", "enable", "--now") for call in calls))
+
+    def test_isolated_start_order_and_failure_cleanup(self):
+        with self.isolated_install() as (bundle, _, calls):
+            install.install(bundle, start=True)
+        self.assertEqual([call[3] for call in calls
+                          if call[:3] == ("systemctl", "enable", "--now")],
+                         [install.EXEC_UNIT, install.CONSENSUS_UNIT,
+                          install.READINESS_TIMER])
+        self.assertIn(("rpc", "eth_getBlockByNumber"), calls)
+        self.assertIn(("rpc", "eth_chainId"), calls)
+
+        with self.isolated_install(fail_consensus=True) as (bundle, _, calls):
+            with self.assertRaises(subprocess.CalledProcessError):
+                install.install(bundle, start=True)
+        self.assertEqual([call[3] for call in calls
+                          if call[:3] == ("systemctl", "disable", "--now")],
+                         [install.READINESS_TIMER, install.CONSENSUS_UNIT,
+                          install.EXEC_UNIT])
 
     def test_signed_approved_bundle_passes(self):
         result = self.check()
