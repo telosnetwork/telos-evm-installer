@@ -1,5 +1,11 @@
 # Telos EVM v2.0 Installer
 
+Telos EVM 3 has a separate, release-gated [sparse-node installer](v3/README.md).
+The commands below remain for Telos EVM 2; they do not install Reth 2 or a full-history archive.
+For EVM 3, select `--evm-history recent` (the default) or request `full`; the latter fails
+closed until a qualified archive and history router are supported by the installer. The EVM 2
+`--bootstrap-mode archive` option below refers to native nodeos/SHiP history, not EVM 3 history.
+
 ## Description
 This repo contains a script to install the Telos EVM automatically from backup as well as detailed manual install instructions.
 
