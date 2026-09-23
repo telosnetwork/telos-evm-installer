@@ -1,5 +1,8 @@
 # Telos EVM v2.0 Installer
 
+Telos EVM 3 has a separate, release-gated [sparse-node installer](v3/README.md).
+The commands below remain for Telos EVM 2; they do not install Reth 2 or a full-history archive.
+
 ## Description
 This repo contains a script to install the Telos EVM automatically from backup as well as detailed manual install instructions.
 
