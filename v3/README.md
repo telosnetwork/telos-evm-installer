@@ -187,6 +187,8 @@ documentation. Release sign-off is separate from this installer code.
 python3.11 -m unittest discover -s v3/tests -v
 ```
 
-These tests cover signed-bundle acceptance and fail-closed paths. A real Ubuntu clean-host
-rehearsal with an actual approved binary, state dump, nodeos/SHiP source, catch-up, snapshot,
-restore, and shadow traffic is still required before production use.
+These tests cover signed-bundle acceptance, fail-closed paths, and isolated install/start/cleanup
+control flow with simulated external commands. They do not execute a checkpoint importer or start
+real services. A real Ubuntu clean-host rehearsal with an actual approved binary, state dump,
+nodeos/SHiP source, catch-up, snapshot, restore, and shadow traffic is still required before
+production use.
