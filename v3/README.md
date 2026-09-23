@@ -12,6 +12,38 @@ node and do not advertise full history. Telos Zero still needs its own synchroni
 feed. Neither a SHiP log nor a signed checkpoint substitutes for the sparse-node backup/restore
 qualification in the release gate.
 
+## Choose EVM RPC history
+
+Use `--evm-history recent|full` on `check`, `preflight`, and `install`. The default is `recent`,
+but specifying it explicitly is clearer in automation.
+
+| Selection | Availability | RPC history commitment |
+| --- | --- | --- |
+| `recent` | Supported by this installer | EVM history from the signed checkpoint anchor onward, after catch-up and readiness checks. Earlier blocks, transactions, receipts, logs, and historical state are not included. |
+| `full` | Not yet supported by this installer | Requires a separately qualified genesis-to-head archive and a history-aware RPC router. The installer exits before reading the bundle or changing the host. |
+
+For example, inspect the signed release's exact history boundary and initial disk requirement:
+
+```bash
+python3.11 v3/install.py check --evm-history recent \
+  --bundle /srv/telos-release-approved \
+  --trust-key /etc/telos-release/authority-public.pem
+```
+
+The JSON result includes `history_from_block`, `history_from_hash`, and signed
+`required_free_bytes`; host preflight also requires 20% filesystem reserve. These are initial
+import requirements, not a long-term disk-growth or time estimate. `--evm-history full` fails
+closed rather than installing a recent-history node under a full-history label. The
+[retained-history router](https://github.com/telosnetwork/telos-reth-2/blob/main/docs/telos/history-routing.md)
+can combine a sparse node with an independent archive, but its binary, archive backend,
+qualification, and public proxy are not packaged or configured by this installer.
+
+Telos Zero history is a separate decision. The repository's EVM 2
+`run.sh --bootstrap-mode archive` restores native nodeos block logs and SHiP history; it does
+not make this EVM 3 node a full-history EVM RPC. This installer does not provision nodeos or
+SHiP in either EVM mode. Do not expose this sparse backend as a full-history endpoint; public
+routing must enforce the boundary or use a qualified archive.
+
 ## Release authority and bundle
 
 No public bundle or approval is assumed by this installer. A release authority must first qualify
@@ -105,13 +137,16 @@ tests from a boolean. Do not set a gate to `true` before its evidence has been r
 ## Check, install, and start
 
 ```bash
-python3.11 v3/install.py check --bundle /srv/telos-release-approved \
+python3.11 v3/install.py check --evm-history recent \
+  --bundle /srv/telos-release-approved \
   --trust-key /etc/telos-release/authority-public.pem
 
-sudo python3.11 v3/install.py install --bundle /srv/telos-release-approved \
+sudo python3.11 v3/install.py install --evm-history recent \
+  --bundle /srv/telos-release-approved \
   --trust-key /etc/telos-release/authority-public.pem
 
-sudo python3.11 v3/install.py install --bundle /srv/telos-release-approved \
+sudo python3.11 v3/install.py install --evm-history recent \
+  --bundle /srv/telos-release-approved \
   --trust-key /etc/telos-release/authority-public.pem --start
 ```
 

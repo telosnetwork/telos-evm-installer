@@ -183,15 +183,40 @@ class InstallerTests(unittest.TestCase):
                         str(self.bundle / "release.sig"), str(self.bundle / "release.json")],
                        check=True, capture_output=True)
 
-    def check(self):
+    def check(self, *options):
         return subprocess.run([sys.executable, str(ROOT / "install.py"), "check", "--bundle",
-                               str(self.bundle), "--trust-key", str(self.public)],
+                               str(self.bundle), "--trust-key", str(self.public), *options],
                               capture_output=True, text=True)
 
     def test_signed_approved_bundle_passes(self):
         result = self.check()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["history_from_block"], 479294328)
+        profile = json.loads(result.stdout)
+        self.assertEqual(profile["evm_history"], "recent")
+        self.assertEqual(profile["history_from_block"], 479294328)
+        self.assertEqual(profile["history_from_hash"], self.anchor_hash)
+        self.assertEqual(profile["required_free_bytes"], 100 * 1024**3)
+        self.assertEqual(profile["additional_filesystem_reserve_percent"], 20)
+        self.assertFalse(profile["pre_checkpoint_history_included"])
+        self.assertFalse(profile["archive_history_included"])
+        self.assertFalse(profile["nodeos_history_installed"])
+
+    def test_explicit_recent_history_passes(self):
+        result = self.check("--evm-history", "recent")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["evm_history"], "recent")
+
+    def test_full_history_fails_before_bundle_or_host_checks(self):
+        for action in ("check", "preflight", "install"):
+            with self.subTest(action=action):
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "install.py"), action,
+                     "--bundle", str(self.root / "does-not-exist"),
+                     "--trust-key", str(self.root / "does-not-exist-key"),
+                     "--evm-history", "full"], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("full-history RPC requires a qualified", result.stderr)
+                self.assertIn("No files changed", result.stderr)
 
     def test_tampered_artifact_fails(self):
         (self.bundle / "telos-reth").write_bytes(b"tampered")
@@ -206,6 +231,11 @@ class InstallerTests(unittest.TestCase):
         self.manifest["approval"]["sparse_backup_restore"] = False
         self.sign()
         self.assertIn("missing a production gate", self.check().stderr)
+
+    def test_missing_disk_requirement_fails_even_when_signed(self):
+        del self.manifest["required_free_bytes"]
+        self.sign()
+        self.assertIn("signed free-space requirement", self.check().stderr)
 
     def test_legacy_reth_version_fails_even_when_signed(self):
         self.manifest["release"]["reth_version"] = "1.0.8"

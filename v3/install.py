@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install a signed Telos EVM 3 sparse-RPC bundle on a clean Linux host."""
+"""Install a signed Telos EVM 3 recent-history RPC bundle on a clean Linux host."""
 
 import argparse
 import hashlib
@@ -206,6 +206,10 @@ class Bundle:
         require(manifest.get("native_chain_id") == NATIVE_CHAIN, "wrong native chain ID")
         require(exact_int(manifest.get("history_from_block"), 1) and
                 hex32(manifest.get("history_from_hash")), "invalid history boundary")
+        required = manifest.get("required_free_bytes")
+        require(exact_int(required, 100 * 1024**3) and
+                required >= 2 * self.file("state.jsonl").stat().st_size,
+                "signed free-space requirement is missing or too small for the state dump")
         artifacts = manifest.get("artifacts", {})
         require(isinstance(artifacts, dict) and set(artifacts) == REQUIRED_FILES,
                 "bundle artifacts must match the supported install set exactly")
@@ -398,13 +402,8 @@ def host_preflight(bundle):
                 "XFS snapshot filesystem must have reflink=1")
     statvfs = os.statvfs(DATA_ROOT.parent)
     free_bytes = statvfs.f_bavail * statvfs.f_frsize
-    required = bundle.manifest.get("required_free_bytes")
-    require(exact_int(required, 100 * 1024**3),
-            "signed free-space requirement missing")
-    require(required >= 2 * bundle.file("state.jsonl").stat().st_size,
-            "signed free-space requirement is too small for the state dump")
     reserve = statvfs.f_blocks * statvfs.f_frsize // 5
-    require(free_bytes >= required + reserve,
+    require(free_bytes >= bundle.manifest["required_free_bytes"] + reserve,
             "insufficient space for checkpoint import plus 20% reserve")
     for name in ("telos-reth", "telos-consensus-client", "telos-checkpoint-bootstrap"):
         artifact = bundle.file(name)
@@ -451,6 +450,20 @@ def rpc(url, method, params):
         result = json.load(response)
     require("error" not in result, f"RPC {method} returned an error")
     return result.get("result")
+
+
+def history_profile(bundle):
+    manifest = bundle.manifest
+    return {
+        "evm_history": "recent",
+        "history_from_block": manifest["history_from_block"],
+        "history_from_hash": manifest["history_from_hash"],
+        "pre_checkpoint_history_included": False,
+        "archive_history_included": False,
+        "nodeos_history_installed": False,
+        "required_free_bytes": manifest["required_free_bytes"],
+        "additional_filesystem_reserve_percent": 20,
+    }
 
 
 def install(bundle, start):
@@ -510,7 +523,8 @@ def install(bundle, start):
             str(bundle.file(name)), artifacts[name])
         run(str(RELEASE_HELPER), "activate", component, release_id, artifacts[name])
     run("systemctl", "daemon-reload")
-    print(f"Staged signed sparse Telos EVM 3 release {release_id} on loopback only.")
+    print(f"Staged signed recent-history Telos EVM 3 release {release_id} on loopback only; "
+          f"EVM history starts at block {bundle.manifest['history_from_block']}.")
     if start:
         try:
             run("systemctl", "enable", "--now", EXEC_UNIT)
@@ -543,19 +557,27 @@ def main():
     parser.add_argument("action", choices=("check", "preflight", "install"))
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--trust-key", type=Path, required=True)
+    parser.add_argument("--evm-history", choices=("recent", "full"), default="recent",
+                        help="recent: signed checkpoint onward (default); full: requires an "
+                             "independently qualified archive and router, not yet installed here")
     parser.add_argument("--start", action="store_true",
                         help="start loopback services after a successful install")
     options = parser.parse_args()
     require(not options.start or options.action == "install", "--start requires install")
+    require(options.evm_history == "recent",
+            "full-history RPC requires a qualified genesis-to-head archive and a history-aware "
+            "router; this installer only installs recent-history Reth and configures no routing. "
+            "No files changed.")
     bundle = Bundle(options.bundle, options.trust_key)
     if options.action == "check":
         print(json.dumps({"verified": True, "release": bundle.manifest["release"]["id"],
                           "network": "mainnet", "role": "sparse-rpc",
-                          "history_from_block": bundle.manifest["history_from_block"],
-                          "archive_history_included": False}, sort_keys=True))
+                          **history_profile(bundle)}, sort_keys=True))
     elif options.action == "preflight":
         host_preflight(bundle)
-        print("Signed bundle and clean-host prerequisites verified; no files changed.")
+        print("Signed recent-history bundle and clean-host prerequisites verified; "
+              f"EVM history starts at block {bundle.manifest['history_from_block']}; "
+              "no files changed.")
     else:
         install(bundle, options.start)
 
